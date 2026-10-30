@@ -156,7 +156,7 @@ function shapeLines(shapes){
   return out;
 }
 export async function navitimeRoutes(key, a, b, startTime){
-  const q = new URLSearchParams({ start: a.lat + ',' + a.lng, goal: b.lat + ',' + b.lng, start_time: startTime, limit: '3', shape: 'true', shape_color: 'railway_line', lang: 'en', datum: 'wgs84' });
+  const q = new URLSearchParams({ start: a.lat + ',' + a.lng, goal: b.lat + ',' + b.lng, start_time: startTime, limit: '3', shape: 'true', shape_color: 'railway_line', datum: 'wgs84' }); // pas de « lang » : le multilingue n'est pas inclus dans le forfait gratuit
   const c = new AbortController(); const t = setTimeout(() => c.abort(), 25000);
   let r;
   try { r = await fetch('https://' + NAV_HOST + '/route_transit?' + q, { headers: { 'x-rapidapi-key': key, 'x-rapidapi-host': NAV_HOST }, signal: c.signal }); }
