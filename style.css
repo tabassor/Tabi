@@ -173,3 +173,6 @@ ol.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:5px;f
 .mk.st{border-radius:4px;border-color:var(--ink);background:var(--surface);color:var(--ink);font-family:var(--f-display)}
 .mk.poi{width:24px;height:24px;border-color:var(--warn);color:var(--warn);font-size:13px}
 .mk.via{width:24px;height:24px;background:var(--warn);border-color:var(--warn);color:#fff;font-size:12px}
+
+.install{border:1px solid var(--stamp);background:var(--stamp-soft);color:var(--stamp);border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap}
+.col{display:flex;flex-direction:column;gap:8px}

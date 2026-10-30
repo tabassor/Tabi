@@ -208,13 +208,50 @@ function renderSync(){
   b.onclick = () => { if (!S.account || !hasToken()) connect(!!S.account); else if (S.syncErr) toast(S.syncErr); else syncNow(); };
 }
 
+/* ================= installation sur le téléphone ================= */
+let installEvt = null;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; renderInstall(); });
+window.addEventListener('appinstalled', () => { installEvt = null; renderInstall(); toast('Tabi est installée sur l’écran d’accueil'); });
+async function installApp(){
+  if (installEvt){
+    const ev = installEvt; installEvt = null;
+    try { await ev.prompt(); const r = await ev.userChoice; if (r && r.outcome !== 'accepted') installEvt = ev; } catch { installEvt = ev; }
+    renderInstall(); return;
+  }
+  openInstallHelp();
+}
+function renderInstall(){
+  const b = $('#installBtn'); if (!b) return;
+  b.hidden = isStandalone() || !(installEvt || isIOS());
+  b.onclick = installApp;
+}
+function installHelp(){
+  if (isStandalone()) return h('div', { class: 'small' }, 'Tabi est déjà ouverte comme appli installée.');
+  if (installEvt) return h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: installApp }, 'Installer Tabi'));
+  if (isIOS()) return h('ol', { class: 'steps' },
+    h('li', null, 'Ouvre Tabi dans Safari (pas dans Chrome : sur iPhone, seul Safari sait installer).'),
+    h('li', null, 'Touche le bouton Partager (carré avec une flèche vers le haut).'),
+    h('li', null, 'Choisis « Sur l’écran d’accueil », puis « Ajouter ».'));
+  return h('div', { class: 'col' },
+    h('ol', { class: 'steps' },
+      h('li', null, 'Dans Chrome, touche le menu ⋮ en haut à droite.'),
+      h('li', null, 'Choisis « Installer l’application ». Si seule l’option « Ajouter à l’écran d’accueil » apparaît, choisis-la puis « Installer » (et non « Créer un raccourci »).'),
+      h('li', null, 'Si rien de tout ça n’apparaît : recharge la page une fois, attends quelques secondes, puis rouvre le menu.')),
+    h('div', { class: 'muted small' }, 'État : ' + ('serviceWorker' in navigator ? (navigator.serviceWorker.controller ? 'mode hors ligne actif' : 'mode hors ligne en cours d’activation (recharge la page)') : 'navigateur sans mode hors ligne') + '.'));
+}
+function openInstallHelp(){
+  openSheet(close => h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead('Installer Tabi', close), h('div', { class: 'sec' }, installHelp()), h('div', { style: 'height:10px' })));
+}
+
 /* ================= rendu ================= */
 let raf = false;
 function schedule(){ if (raf) return; raf = true; requestAnimationFrame(() => { raf = false; renderAll(); }); }
 const typingIn = root => { const a = document.activeElement; return a && root && root.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName); };
 document.addEventListener('focusout', () => setTimeout(() => { if (S.deferred){ S.deferred = false; renderAll(); } }, 0));
 function renderAll(){
-  renderSync(); renderHeader(); renderTabs();
+  renderSync(); renderHeader(); renderTabs(); renderInstall();
   const main = $('#main');
   if (typingIn(main) || typingIn($('#sheetRoot'))){ S.deferred = true; return; }
   const y = window.scrollY;
@@ -510,6 +547,7 @@ function welcome(kind){
     kind === 'config'
       ? h('div', { class: 'banner warn' }, 'Configuration en cours : l’identifiant de connexion Google n’est pas encore renseigné.')
       : h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => connect(false) }, 'Se connecter avec Google')),
+    !isStandalone() ? h('button', { class: 'btn', type: 'button', onclick: installApp, style: 'align-self:flex-start' }, 'Installer Tabi sur ce téléphone') : null,
     h('p', { class: 'muted small', style: 'margin:0' }, 'Google affichera « application non validée » : c’est normal pour cette appli privée. Choisis « Paramètres avancés », puis « Accéder à Tabi ».'));
 }
 
@@ -1235,8 +1273,7 @@ function openTripSheet(){
         S.account ? h('button', { class: 'btn ghost', type: 'button', onclick: async () => {
           if (S.pendingCount && !confirmTwice()) return;
           clearToken(); S.account = null; await idb.del('meta', 'account'); for (const s of ['items', 'outbox', 'blobs']) await idb.clear(s); S.items.clear(); S.folders = null; await idb.del('meta', 'folders'); close(); renderAll(); } }, 'Se déconnecter') : null)),
-    h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Installer sur le téléphone'),
-      h('div', { class: 'small' }, 'Android (Chrome) : menu ⋮ › « Ajouter à l’écran d’accueil ». iPhone (Safari) : bouton Partager › « Sur l’écran d’accueil ».')),
+    h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Installer sur le téléphone'), installHelp()),
     h('div', { style: 'height:8px' })));
 }
 let confirmArmed = 0;

@@ -1,11 +1,14 @@
 // Service worker Tabi : appli disponible hors ligne, fond de carte mis en cache au fil de l'usage.
-const SHELL = 'tabi-shell-v2';
+const SHELL = 'tabi-shell-v3';
 const TILES = 'tabi-tiles-v1';
 const MAPMETA = 'tabi-mapmeta-v1';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'routes.js', 'drive.js', 'store.js', 'config.js', 'manifest.webmanifest',
-  'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
+  'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png'];
 
-self.addEventListener('install', e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
+// Installation tolérante : un fichier indisponible ne doit pas empêcher l'installation de l'appli.
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(SHELL).then(c => Promise.allSettled(FILES.map(f => c.add(new Request(f, { cache: 'reload' }))))).then(() => self.skipWaiting()));
+});
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => ![SHELL, TILES, MAPMETA].includes(k)).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
