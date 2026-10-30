@@ -1,8 +1,8 @@
 // Service worker Tabi : appli disponible hors ligne, fond de carte mis en cache au fil de l'usage.
-const SHELL = 'tabi-shell-v1';
+const SHELL = 'tabi-shell-v2';
 const TILES = 'tabi-tiles-v1';
 const MAPMETA = 'tabi-mapmeta-v1';
-const FILES = ['./', 'index.html', 'style.css', 'app.js', 'drive.js', 'store.js', 'config.js', 'manifest.webmanifest',
+const FILES = ['./', 'index.html', 'style.css', 'app.js', 'routes.js', 'drive.js', 'store.js', 'config.js', 'manifest.webmanifest',
   'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
@@ -37,5 +37,6 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (u.hostname === 'fonts.googleapis.com' || u.hostname === 'fonts.gstatic.com'){ e.respondWith(staleWhileRevalidate(req, SHELL)); return; }
-  if (u.origin === self.location.origin) e.respondWith(staleWhileRevalidate(req, SHELL));
+  // Appli : réseau d'abord (dernière version), cache si hors ligne.
+  if (u.origin === self.location.origin) e.respondWith(networkFirst(req, SHELL));
 });
