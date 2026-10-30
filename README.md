@@ -25,7 +25,7 @@ Champs communs : `id` (chaîne unique), `type`, `updatedAt` (ISO), `updatedBy` (
 | type | champs |
 |---|---|
 | `trip` (id `trip`) | `name`, `start`, `end` (AAAA-MM-JJ) |
-| `place` | `name`, `kind` (visite, resto, hotel, activite, transport, autre), `day` (AAAA-MM-JJ ou null = idée), `order`, `time` (HH:MM), `city`, `address`, `lat`, `lng`, `coordSource` (lien, saisie, carte, osm, estime), `mapsUrl`, `status` (planned, visited, skipped, suggested), `visitedAt`, `visitedBy`, `addedDuring`, `note` |
+| `place` | `name`, `kind` (visite, resto, hotel, activite, transport, autre), `day` (AAAA-MM-JJ ou null = idée), `order`, `time` (HH:MM), `city`, `address`, `lat`, `lng`, `coordSource` (lien, saisie, carte, osm, estime), `mapsUrl`, `status` (planned, visited, skipped, suggested), `visitedAt`, `visitedBy`, `addedDuring`, `note`, `googlePlaceId`, `tabelogUrl`, `tabelogScore` (texte, ex. « 3,65 ») |
 | `booking` | `title`, `kind` (hotel, resto, activite, transport, autre), `date`, `time`, `endDate`, `endTime`, `confirmation`, `address`, `city`, `lat`, `lng`, `details`, `cancelled`, `placeId`, `gmailUrl`, `gmailThreadId`, `source` (gmail, manuel) |
 | `note` | `text`, `placeId`, `bookingId`, `day`, `by`, `at` |
 | `media` | `role` (photo, billet), `fileId` (fichier Drive), `placeId`, `bookingId`, `day`, `name`, `mime`, `thumb` (miniature data:URL), `caption`, `by`, `at`, `takenAt` |

@@ -259,3 +259,38 @@ export async function translateNames(stations, lines, center){
   for (const l of ln){ const dl = dictLine(l); if (dl && (!map[l] || /[぀-鿿]/.test(map[l]))) map[l] = dl; }
   return map;
 }
+
+/* ---------- Google Places (New) : recherche de lieux ---------- */
+const PLACES = 'https://places.googleapis.com/v1/';
+async function gfetch(url, key, opts = {}, fields){
+  let r;
+  try { r = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, ...(fields ? { 'X-Goog-FieldMask': fields } : {}), ...(opts.headers || {}) } }); }
+  catch { throw new Error('Recherche Google injoignable (réseau)'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok){ const e = new Error((j.error && j.error.message) || ('Google Places : erreur ' + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+export async function googleAutocomplete(key, input, bias, session){
+  const body = { input, languageCode: 'fr', sessionToken: session };
+  if (bias) body.locationBias = { circle: { center: { latitude: bias.lat, longitude: bias.lng }, radius: 30000 } };
+  const j = await gfetch(PLACES + 'places:autocomplete', key, { method: 'POST', body: JSON.stringify(body) });
+  return (j.suggestions || []).filter(s => s.placePrediction).map(s => { const p = s.placePrediction;
+    return { src: 'g', id: p.placeId, name: (p.structuredFormat && p.structuredFormat.mainText && p.structuredFormat.mainText.text) || (p.text && p.text.text) || '',
+      sub: (p.structuredFormat && p.structuredFormat.secondaryText && p.structuredFormat.secondaryText.text) || '', types: p.types || [] }; });
+}
+export async function googlePlace(key, id, session){
+  const j = await gfetch(PLACES + 'places/' + encodeURIComponent(id) + '?languageCode=fr&sessionToken=' + encodeURIComponent(session || ''), key, {},
+    'id,displayName,formattedAddress,location,types,primaryType,googleMapsUri,addressComponents');
+  const comp = t => ((j.addressComponents || []).find(c => (c.types || []).includes(t)) || {}).longText || '';
+  return { id: j.id, name: (j.displayName && j.displayName.text) || '', address: j.formattedAddress || '', lat: j.location && j.location.latitude, lng: j.location && j.location.longitude,
+    types: [j.primaryType, ...(j.types || [])].filter(Boolean), mapsUrl: j.googleMapsUri || null,
+    city: comp('locality') || comp('sublocality_level_1') || comp('administrative_area_level_2') || comp('administrative_area_level_1') };
+}
+export function kindFromGoogle(types){
+  const t = (types || []).join(' ');
+  if (/lodging|hotel|hostel|inn|guest_house|ryokan/.test(t)) return 'hotel';
+  if (/restaurant|cafe|bar|bakery|food|meal|coffee|ramen|sushi|izakaya|tea_house|dessert|confectionery/.test(t)) return 'resto';
+  if (/train_station|subway_station|transit_station|bus_station|airport|light_rail_station|ferry_terminal/.test(t)) return 'transport';
+  if (/amusement|aquarium|zoo|spa|onsen|bowling|karaoke|stadium|water_park|ski|gym|theater|movie|night_club|escape/.test(t)) return 'activite';
+  return 'visite';
+}

@@ -3,7 +3,7 @@
 import { CONFIG } from './config.js';
 import { drive, signIn, hasToken, clearToken } from './drive.js';
 import { idb } from './store.js';
-import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate } from './routes.js';
+import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate, googleAutocomplete, googlePlace, kindFromGoogle } from './routes.js';
 
 /* ================= utilitaires ================= */
 const $ = s => document.querySelector(s);
@@ -299,6 +299,7 @@ function dayModel(day){
 
 /* ---- liens Google Maps ---- */
 function placeQuery(p){ if (num(p.lat) != null && p.coordSource && p.coordSource !== 'estime') return p.lat + ',' + p.lng; return [p.name, p.address || p.city].filter(Boolean).join(', '); }
+const tabelogUrl = p => p.tabelogUrl || 'https://www.google.com/search?q=' + encodeURIComponent('site:tabelog.com ' + p.name + (p.city ? ' ' + p.city : ''));
 const placeUrl = p => p.mapsUrl || 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(placeQuery(p));
 function legUrl(from, to, mode){
   let u = 'https://www.google.com/maps/dir/?api=1&travelmode=' + mode + '&destination=' + encodeURIComponent(placeQuery(to));
@@ -838,6 +839,7 @@ function stopRow(p, i, from){
         p.addedDuring ? h('span', { class: 'chip warn' }, 'Ajouté en route') : null,
         num(p.lat) == null ? h('span', { class: 'chip' }, 'Sans position') : (p.coordSource === 'estime' ? h('span', { class: 'chip', title: 'Position estimée' }, '≈ position') : null),
         np ? h('span', { class: 'muted small' }, np + ' photo' + (np > 1 ? 's' : '')) : null,
+        p.tabelogScore ? h('span', { class: 'chip k-resto', title: 'Note Tabelog' }, '食べログ ' + p.tabelogScore) : null,
         nn ? h('span', { class: 'muted small' }, nn + ' note' + (nn > 1 ? 's' : '')) : null,
         p._pending ? h('span', { class: 'muted small' }, '· non synchronisé') : null)),
     from && hasPos(from) && hasPos(p) ? h('a', { class: 'btn ghost', href: legUrlFor(from, p), target: '_blank', rel: 'noopener', 'aria-label': 'Google Maps vers ' + p.name }, 'Y aller')
@@ -1059,16 +1061,6 @@ function openLeg(a, b){
       else if (pk.min || pk.lines) body.push(h('div', { class: 'sec' }, h('div', { class: 'banner' }, h('b', null, 'Retenu : '), [pk.min ? pk.min + ' min' : '', pk.lines, pk.exit ? 'sortie ' + pk.exit : '', pk.dep ? 'départ ' + pk.dep : ''].filter(Boolean).join(' · '))));
       body.push(h('div', { class: 'sec' }, h('div', { class: 'row' },
         navChosen(g) ? h('button', { class: 'btn', type: 'button', onclick: () => showOnMap(close) }, 'Voir sur la carte') : null, gmapBtn, appBtn)));
-      const f = h('form', { class: 'form', style: 'padding:0', onsubmit: async e => { e.preventDefault(); const fd = new FormData(f); document.activeElement && document.activeElement.blur();
-        const pick = { min: +fd.get('min') || null, lines: String(fd.get('lines') || '').trim() || null, dep: fd.get('dep') || null, exit: String(fd.get('exit') || '').trim() || null };
-        await setLeg(a, b, { pick: pick.min || pick.lines ? pick : null }, pick.min || pick.lines ? 'Itinéraire enregistré' : 'Itinéraire effacé'); } },
-        h('div', { class: 'grid2' },
-          h('label', { class: 'f' }, 'Durée (min)', h('input', { type: 'number', name: 'min', id: 'pk-min', min: '1', max: '600', inputmode: 'numeric', value: pk.min || '' })),
-          h('label', { class: 'f' }, 'Départ', h('input', { type: 'time', name: 'dep', id: 'pk-dep', value: pk.dep || '' }))),
-        h('label', { class: 'f' }, 'Lignes', h('input', { type: 'text', name: 'lines', id: 'pk-lines', placeholder: 'Ex. Marunouchi → Ginza', value: pk.lines || '' })),
-        h('label', { class: 'f' }, 'Sortie à l’arrivée', h('input', { type: 'text', name: 'exit', id: 'pk-exit', placeholder: 'Ex. A1', value: pk.exit || '' })),
-        h('div', null, h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')));
-      body.push(h('details', { class: 'sec' }, h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Saisir un itinéraire à la main'), f));
     } else {
       body.push(h('div', { class: 'sec' }, h('div', { class: 'muted' }, fmtDist(g.straight) + ' à vol d’oiseau'), h('div', { class: 'row' }, gmapBtn, appBtn)));
     }
@@ -1269,7 +1261,21 @@ function openPlaceForm(init){
     v: { name: init.name || '', kind: init.kind || 'visite', day: init.day || '', time: '', city: '', address: '', link: '', note: '' },
     coords: num(init.lat) != null ? { lat: init.lat, lng: init.lng, coordSource: init.coordSource || 'carte' } : null };
   const bind = k => ({ id: 'pf-' + k, name: k, value: st.v[k], oninput: e => { st.v[k] = e.target.value; }, onchange: e => { st.v[k] = e.target.value; } });
+  st.session = uid() + uid();
+  const biasPoint = () => { const d = init.day || currentDay(); const ps = d ? daySeq(d).seq.filter(hasPos) : []; const p = ps[ps.length - 1] || places().find(hasPos) || hotelStays().map(hotelAnchor).find(hasPos); return p ? { lat: p.lat, lng: p.lng } : { lat: 35.68, lng: 139.76 }; };
+  const pickGoogle = async r => {
+    st.searching = true; S.sheet.render();
+    try {
+      const d = await googlePlace(gKey(), r.id, st.session);
+      st.coords = { lat: +(+d.lat).toFixed(6), lng: +(+d.lng).toFixed(6), coordSource: 'google' };
+      st.v.name = d.name || r.name; st.v.city = d.city || st.v.city; st.v.address = d.address; st.v.kind = kindFromGoogle(d.types.length ? d.types : r.types);
+      st.gid = d.id; st.mapsUrl = d.mapsUrl; st.picked = d; st.results = null; st.session = uid() + uid();
+    } catch (e){ toast('Détails du lieu indisponibles : ' + e.message); }
+    st.searching = false; S.sheet && S.sheet.render();
+  };
   const pick = r => {
+    if (r.src === 'g') return pickGoogle(r);
+    r = r.raw; st.gid = null; st.mapsUrl = null;
     const a = r.address || {};
     st.coords = { lat: +(+r.lat).toFixed(6), lng: +(+r.lon).toFixed(6), coordSource: 'osm' };
     st.v.name = r.name || r.display_name.split(',')[0];
@@ -1281,10 +1287,17 @@ function openPlaceForm(init){
   async function search(){
     const q = st.v.name.trim(); if (!q) return;
     st.searching = true; st.results = null; S.sheet.render();
-    try {
-      const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&accept-language=fr,en,ja&q=' + encodeURIComponent(q));
-      st.results = r.ok ? await r.json() : [];
-    } catch { st.results = []; toast('Recherche indisponible (réseau).'); }
+    st.engine = 'osm';
+    if (gKey() && !openPlaceForm.gFailed){
+      try { st.results = await googleAutocomplete(gKey(), q, biasPoint(), st.session); st.engine = 'google'; }
+      catch (e){ console.warn('Tabi Places', e); if (e.status === 403 || e.status === 400){ openPlaceForm.gFailed = true; toast('Recherche Google refusée (active « Places API (New) » sur la clé) : OpenStreetMap utilisé.'); } }
+    }
+    if (st.engine === 'osm'){
+      try {
+        const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&accept-language=fr,en,ja&q=' + encodeURIComponent(q));
+        st.results = (r.ok ? await r.json() : []).map(x => ({ src: 'osm', name: x.name || x.display_name.split(',')[0], sub: x.display_name, kind: kindFromOsm(x), raw: x }));
+      } catch { st.results = []; toast('Recherche indisponible (réseau).'); }
+    }
     st.searching = false; S.sheet && S.sheet.render();
   }
   openSheet(close => {
@@ -1299,7 +1312,7 @@ function openPlaceForm(init){
       await save({ id: uid(), type: 'place', name, kind: v.kind || 'visite', day, time: v.time || null,
         city: v.city.trim() || null, address: v.address.trim() || null,
         lat: coords ? coords.lat : null, lng: coords ? coords.lng : null, coordSource: coords ? coords.coordSource : null,
-        mapsUrl: /^https?:\/\//.test(v.link.trim()) ? v.link.trim() : null, order: nextOrder(day), status: 'planned', addedDuring: duringTrip(day),
+        mapsUrl: /^https?:\/\//.test(v.link.trim()) ? v.link.trim() : (st.mapsUrl || null), googlePlaceId: st.gid || null, order: nextOrder(day), status: 'planned', addedDuring: duringTrip(day),
         note: v.note.trim() || null, createdBy: meName(), createdAt: new Date().toISOString() },
         day ? 'Ajouté au ' + fmtDay(day) + ' · ' + name : 'Ajouté aux idées · ' + name);
       close();
@@ -1309,9 +1322,10 @@ function openPlaceForm(init){
         h('input', { type: 'text', required: true, placeholder: 'Ex. Fushimi Inari Taisha', autocomplete: 'off', ...bind('name'),
           onkeydown: e => { if (e.key === 'Enter' && !st.coords){ e.preventDefault(); search(); } } }),
         h('button', { class: 'btn', type: 'button', disabled: !S.online ? true : null, onclick: search }, 'Chercher'))),
-      st.searching ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), 'Recherche OpenStreetMap…') : null,
+      st.searching ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), 'Recherche…') : null,
       st.results ? (st.results.length ? h('div', { class: 'results' }, st.results.map(r => h('button', { type: 'button', onclick: () => pick(r) },
-          h('strong', null, r.name || r.display_name.split(',')[0]), h('span', { class: 'chip', style: 'margin-left:6px' }, KINDS[kindFromOsm(r)]), h('div', { class: 'muted small' }, r.display_name))))
+          h('strong', null, r.name), h('span', { class: 'chip', style: 'margin-left:6px' }, KINDS[r.src === 'g' ? kindFromGoogle(r.types) : r.kind]), h('div', { class: 'muted small' }, r.sub))),
+          st.engine === 'google' ? h('div', { class: 'muted small', style: 'padding:4px 10px;text-align:right' }, 'Résultats Google') : null)
         : h('div', { class: 'muted small' }, 'Aucun résultat. Essaie le nom en anglais ou en japonais, colle un lien Google Maps, ou place le lieu sur la carte.')) : null,
       st.coords ? h('div', { class: 'banner' }, '✓ Position trouvée', st.picked ? ' · ' + st.v.address.slice(0, 110) : ' (' + st.coords.lat.toFixed(5) + ', ' + st.coords.lng.toFixed(5) + ')',
           h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.coords = null; st.picked = null; S.sheet.render(); } }, 'Effacer'))
@@ -1349,6 +1363,7 @@ function openPlace(id){
           h('button', { class: 'btn' + (p.status === 'visited' ? '' : ' primary'), type: 'button', onclick: () => toggleVisit(p) }, p.status === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité'),
           p.status !== 'visited' ? h('button', { class: 'btn', type: 'button', onclick: () => save({ id, status: p.status === 'skipped' ? 'planned' : 'skipped' }) }, p.status === 'skipped' ? 'Remettre au programme' : 'Pas fait') : null,
           h('a', { class: 'btn', href: placeUrl(p), target: '_blank', rel: 'noopener' }, 'Google Maps'),
+          p.kind === 'resto' || p.tabelogUrl ? h('a', { class: 'btn', href: tabelogUrl(p), target: '_blank', rel: 'noopener' }, 'Tabelog' + (p.tabelogScore ? ' · ' + p.tabelogScore : '')) : null,
           num(p.lat) != null && M.eng ? h('button', { class: 'btn', type: 'button', onclick: () => { close(); if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); } M.eng && M.eng.fly(p, 16); M.el.scrollIntoView({ block: 'center' }); } }, 'Voir sur la carte') : null)),
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Photos'),
         photos.length ? thumbs(photos) : h('span', { class: 'muted' }, 'Pas encore de photo.'),
@@ -1360,6 +1375,7 @@ function openPlace(id){
         (() => { const f = h('form', { class: 'form', style: 'padding:0', onsubmit: async e => {
           e.preventDefault(); const fd = new FormData(f); const link = String(fd.get('link') || '').trim(); const c = parseCoords(link);
           const upd = { id, name: String(fd.get('name')).trim() || p.name, kind: fd.get('kind'), time: fd.get('time') || null, city: String(fd.get('city') || '').trim() || null, address: String(fd.get('address') || '').trim() || null, note: String(fd.get('note') || '').trim() || null };
+          if (fd.has('tabelogUrl')){ upd.tabelogUrl = String(fd.get('tabelogUrl') || '').trim() || null; upd.tabelogScore = String(fd.get('tabelogScore') || '').trim().replace('.', ',') || null; }
           if (link !== (p.mapsUrl || '')){ upd.mapsUrl = /^https?:\/\//.test(link) ? link : null; if (c){ upd.lat = c.lat; upd.lng = c.lng; upd.coordSource = /^https?:/.test(link) ? 'lien' : 'saisie'; } }
           const nd = fd.get('day') || null; if (nd !== (p.day || null)){ upd.day = nd; upd.order = nextOrder(nd); }
           document.activeElement && document.activeElement.blur();
@@ -1375,6 +1391,9 @@ function openPlace(id){
             h('label', { class: 'f' }, 'Ville / quartier', h('input', { type: 'text', name: 'city', id: 'pe-city', value: p.city || '' }))),
           h('label', { class: 'f' }, 'Adresse', h('input', { type: 'text', name: 'address', id: 'pe-address', value: p.address || '' })),
           h('label', { class: 'f' }, 'Note', h('input', { type: 'text', name: 'note', id: 'pe-note', value: p.note || '' })),
+          p.kind === 'resto' || p.tabelogUrl ? h('div', { class: 'grid2' },
+            h('label', { class: 'f' }, 'Lien Tabelog', h('input', { type: 'url', name: 'tabelogUrl', id: 'pe-tbl', value: p.tabelogUrl || '', placeholder: 'https://tabelog.com/…' })),
+            h('label', { class: 'f' }, 'Note Tabelog', h('input', { type: 'text', name: 'tabelogScore', id: 'pe-tbs', inputmode: 'decimal', value: p.tabelogScore || '', placeholder: '3,65' }))) : null,
           h('label', { class: 'f' }, 'Lien Google Maps ou coordonnées', h('input', { type: 'text', name: 'link', id: 'pe-link', value: p.mapsUrl || '' })),
           h('div', { class: 'muted small' }, num(p.lat) != null ? `Position ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)} · source : ${({ lien: 'lien Google Maps', saisie: 'saisie', carte: 'placé sur la carte', osm: 'OpenStreetMap', estime: 'estimation' })[p.coordSource] || '?'}` : 'Pas de position.'),
           h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'Enregistrer'),
