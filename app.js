@@ -957,10 +957,36 @@ function openLeg(a, b){
       body.push(h('div', { class: 'sec' }, h('div', { class: 'row' }, h('a', { class: 'btn primary', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Itinéraire en voiture dans Google Maps')),
         h('div', { class: 'muted small' }, fmtDist(g.straight) + ' à vol d’oiseau. Montre l’adresse de destination au chauffeur, elle est dans la fiche du lieu.')));
     }
+    if (gKey()) body.push(h('div', { class: 'sec' }, h('div', { class: 'row' },
+      h('button', { class: 'btn' + (g.eff === 'transit' ? ' primary' : ''), type: 'button', onclick: () => openGmap(a, b, g.eff, g.via) }, 'Carte Google de ce trajet'),
+      h('span', { class: 'muted small' }, S.online ? 'Itinéraire Google affiché dans Tabi (en ligne).' : 'Disponible en ligne uniquement.'))));
     if (g.route && g.eff === 'walk') body.push(h('div', { class: 'sec muted small' }, 'Tracé : ' + (g.route.engine === 'osrm' ? 'OSRM' : 'Valhalla') + ', données © OpenStreetMap · calculé le ' + fmtDay(isoDay(new Date(g.route.at))) + ' ' + fmtTime(g.route.at)));
     return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Trajet' },
       sheetHead(a.name + ' → ' + b.name, close), ...body, h('div', { style: 'height:10px' }));
   });
+}
+/* ---- Carte Google intégrée (Maps Embed API, clé rangée dans le Drive : data/config_config.json) ---- */
+const gKey = () => { const c = S.items.get('config'); return (c && c.mapsEmbedKey) || ''; };
+function gEmbedUrl(a, b, mode, via){
+  const m = { walk: 'walking', transit: 'transit', taxi: 'driving' }[mode] || 'transit';
+  let u = 'https://www.google.com/maps/embed/v1/directions?key=' + encodeURIComponent(gKey()) + '&origin=' + a.lat + ',' + a.lng + '&destination=' + b.lat + ',' + b.lng + '&mode=' + m + '&language=fr&region=JP';
+  if (m === 'walking' && via && via.length) u += '&waypoints=' + encodeURIComponent(via.slice(0, 20).map(v => v.lat + ',' + v.lng).join('|'));
+  return u;
+}
+function openGmap(a, b, mode, via){
+  if (!S.online){ toast('Carte Google disponible en ligne uniquement.'); return; }
+  let cur = mode;
+  openSheet(close => {
+    const frame = h('iframe', { class: 'gmap', src: gEmbedUrl(a, b, cur, via), loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin', allowfullscreen: true, title: 'Itinéraire Google Maps' });
+    const segs = ['transit', 'walk', 'taxi'].map(m => h('button', { class: 'seg' + (m === cur ? ' on' : ''), type: 'button', onclick: e => {
+      cur = m; frame.src = gEmbedUrl(a, b, m, via); e.currentTarget.parentNode.querySelectorAll('.seg').forEach(x => x.classList.toggle('on', x === e.currentTarget)); } }, MODES[m]));
+    return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Carte Google' },
+      sheetHead(a.name + ' → ' + b.name, close),
+      h('div', { class: 'sec' }, h('div', { class: 'seg-row', role: 'group', 'aria-label': 'Mode' }, segs), frame,
+        h('div', { class: 'row' }, h('a', { class: 'btn', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Ouvrir dans l’appli Google Maps')),
+        h('div', { class: 'muted small' }, 'Carte et itinéraire fournis par Google. Si la carte reste vide ou affiche une erreur, dis-le à Claude : c’est le test de la disponibilité des transports japonais.')),
+      h('div', { style: 'height:10px' }));
+  }, true);
 }
 function nearList(n){
   if (!n) return null;
@@ -1459,6 +1485,11 @@ function openTripSheet(){
   openSheet(close => h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Voyage et réglages' },
     sheetHead('Voyage et réglages', close),
     trip() ? h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Ce voyage'), tripForm(false)) : null,
+    h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Carte Google intégrée'),
+      (() => { const f = h('form', { class: 'row', style: 'flex-wrap:nowrap', onsubmit: async e => { e.preventDefault(); const v = f.querySelector('input').value.trim(); f.querySelector('input').blur();
+          await save({ id: 'config', type: 'config', mapsEmbedKey: v || null }, v ? 'Clé enregistrée dans le Drive' : 'Clé retirée'); } },
+        h('input', { type: 'text', id: 'cfg-gkey', value: gKey(), placeholder: 'Clé Maps Embed API (AIza…)', autocomplete: 'off', style: 'flex:1' }), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')); return f; })(),
+      h('div', { class: 'muted small' }, 'La clé est rangée dans le dossier Drive du voyage, pas dans le code public. Restreinte au site Tabi et à la seule API Maps Embed.')),
     h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Carte hors ligne'),
       h('div', { class: 'small' }, 'Télécharge le fond de carte autour de tous les lieux du voyage, à faire en Wi-Fi avant le départ.'),
       h('div', null, h('button', { class: 'btn', type: 'button', onclick: openOfflinePrep }, 'Préparer la carte hors ligne'))),
@@ -1479,13 +1510,13 @@ let confirmArmed = 0;
 function confirmTwice(){ if (Date.now() - confirmArmed < 4000) return true; confirmArmed = Date.now(); toast(S.pendingCount + ' modification(s) pas encore envoyée(s) seraient perdues. Touche encore pour confirmer.'); return false; }
 
 /* ---- panneaux ---- */
-function openSheet(builder){
+function openSheet(builder, once){
   const root = $('#sheetRoot');
   const close = () => { S.sheet = null; root.replaceChildren(); document.removeEventListener('keydown', esc); };
   const esc = e => { if (e.key === 'Escape') close(); };
   if (S.sheet) S.sheet.close();
   document.addEventListener('keydown', esc);
-  const st = { close, render(){ if (typingIn(root)){ S.deferred = true; return; } const top = (root.querySelector('.sheet') || {}).scrollTop || 0; const c = builder(close); if (!c){ close(); return; }
+  const st = { close, render(){ if (once && root.firstChild) return; if (typingIn(root)){ S.deferred = true; return; } const top = (root.querySelector('.sheet') || {}).scrollTop || 0; const c = builder(close); if (!c){ close(); return; }
     root.replaceChildren(h('div', { class: 'scrim', onclick: e => { if (e.target === e.currentTarget) close(); } }, c)); const sh = root.querySelector('.sheet'); if (sh) sh.scrollTop = top; } };
   S.sheet = st; st.render();
 }
