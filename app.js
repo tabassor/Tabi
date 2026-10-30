@@ -534,10 +534,6 @@ function updateMap(){
     if (g.eff === 'walk'){
       g.via.forEach((v, k) => E.marker(markerEl('via', String.fromCharCode(97 + k), () => openLeg(F.a, F.b), 'Étape : ' + v.name), v));
       if (g.style === 'promenade' && g.L && g.L.pois) for (const p of g.L.pois) if (!g.via.some(v => v.id === p.id)) E.marker(markerEl('poi', '★', () => openPoi(F.a, F.b, p), p.cat + ' : ' + p.name), p);
-    } else if (g.eff === 'transit' && g.L && g.L.near){
-      for (const side of ['a', 'b']){ const n = g.L.near[side]; if (!n) continue;
-        n.entrances.slice(0, 8).filter(hasPos).forEach(e => E.marker(markerEl('ent', e.ref || 'M', () => toast((e.ref ? 'Sortie ' + e.ref : 'Entrée') + (e.name ? ' · ' + e.name : '') + (num(e.d) != null ? ' · ' + fmtDist(e.d) : '')), 'Entrée/sortie ' + (e.ref || '')), e));
-        n.bus.slice(0, 4).filter(hasPos).forEach(s => E.marker(markerEl('bus', 'B', () => toast('Bus : ' + s.name + (num(s.d) != null ? ' · ' + fmtDist(s.d) : '')), 'Arrêt de bus ' + s.name), s)); }
     }
     if (!M.placing){
       M.banner.replaceChildren(h('span', null, F.a.name + ' → ' + F.b.name + ' · ' + legLabel(g)), h('button', { class: 'btn', type: 'button', onclick: () => { M.focus = null; M.banner.hidden = true; M.sig = ''; updateMap(); } }, 'Fermer'));
@@ -1002,110 +998,82 @@ function openLeg(a, b){
   const st = { busy: '', err: '', radius: 300, auto: true };
   const run = async (label, fn) => {
     if (st.busy) return;
-    if (!S.online){ st.err = 'Hors ligne : calcul impossible maintenant.'; S.sheet && S.sheet.render(); return; }
+    if (!navigator.onLine){ st.err = 'Hors ligne : calcul impossible maintenant.'; S.sheet && S.sheet.render(); return; }
     st.busy = label; st.err = ''; S.sheet && S.sheet.render();
     try { await fn(); } catch (e){ console.warn(e); st.err = errText(e); }
     st.busy = ''; S.sheet && S.sheet.render();
   };
-  const showOnMap = (close) => { close(); M.focus = legId(a, b); if (S.view !== 'jour'){ S.view = 'jour'; } M.sig = ''; renderAll(); setTimeout(() => M.el && M.el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 50); };
+  const showOnMap = close => { close(); M.focus = legId(a, b); if (S.view !== 'jour') S.view = 'jour'; M.sig = ''; renderAll(); setTimeout(() => M.el && M.el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 50); };
   openSheet(close => {
     const g = legInfo(a, b);
     if (!g.ok) return null;
-    // calculs automatiques à l'ouverture, une seule fois
+    // à l'ouverture : tracé à pied (sa durée réelle décide du choix auto), une seule fois
     if (st.auto){
       st.auto = false;
-      // le tracé à pied est calculé même en mode auto : sa durée réelle décide du choix à pied / transports
-      setTimeout(() => run('Calcul du trajet…', async () => {
-        if (!legInfo(a, b).route && (g.eff === 'walk' || g.straight < 5000)) await computeWalk(a, b);
+      setTimeout(() => run('Calcul du trajet à pied…', async () => {
+        if (!legInfo(a, b).route && g.straight < 5000) await computeWalk(a, b);
         const n = legInfo(a, b);
-        if (n.eff === 'transit' && !nearFresh(n)) await computeNear(a, b);
         if (n.eff === 'walk' && n.style === 'promenade' && !poisFresh(n, st.radius)) await computePois(a, b, st.radius);
       }), 0);
     }
-    const modeBtn = (m, label) => h('button', { class: 'seg' + (g.chosen === m ? ' on' : ''), type: 'button', 'aria-pressed': String(g.chosen === m), onclick: async () => {
+    const seg = (on, label, fn) => h('button', { class: 'seg' + (on ? ' on' : ''), type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
+    const modeBtn = (m, label) => seg(g.chosen === m, label, async () => {
       await setLeg(a, b, { mode: m === 'auto' ? null : m });
-      const n = legInfo(a, b);
-      if (n.eff === 'walk' && !n.route) run('Calcul du trajet à pied…', () => computeWalk(a, b));
-      if (n.eff === 'transit' && !nearFresh(n)) run('Recherche des entrées de métro et arrêts…', () => computeNear(a, b));
-    } }, label);
+      const n = legInfo(a, b); if (n.eff === 'walk' && !n.route) run('Calcul du trajet à pied…', () => computeWalk(a, b));
+    });
+    const gmapBtn = gKey() && navigator.onLine ? h('button', { class: 'btn', type: 'button', onclick: () => openGmap(a, b, g.eff, g.via) }, 'Carte Google') : null;
+    const appBtn = h('a', { class: 'btn', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Appli Google Maps');
     const body = [];
     body.push(h('div', { class: 'sec' },
-      h('div', { class: 'seg-row', role: 'group', 'aria-label': 'Mode de déplacement' },
-        modeBtn('auto', 'Auto'), modeBtn('walk', 'À pied'), modeBtn('transit', 'Transports'), modeBtn('taxi', 'Taxi')),
-      h('div', { class: 'muted small' }, g.chosen === 'auto'
-        ? `Choix auto : ${MODES[g.eff].toLowerCase()} (${g.estimated ? 'environ ' : ''}${g.walkMin} min à pied ; au-delà de ${walkMax()} min, transports). Réglable dans les réglages du voyage.`
-        : 'Mode choisi pour ce trajet, partagé avec tout le monde.'),
+      h('div', { class: 'seg-row', role: 'group', 'aria-label': 'Mode de déplacement' }, modeBtn('auto', 'Auto'), modeBtn('walk', 'À pied'), modeBtn('transit', 'Transports'), modeBtn('taxi', 'Taxi')),
+      g.chosen === 'auto' ? h('div', { class: 'muted small' }, 'Auto : ' + MODES[g.eff].toLowerCase() + ' · ' + (g.estimated ? '≈ ' : '') + g.walkMin + ' min à pied (transports au-delà de ' + walkMax() + ' min)') : null,
       st.busy ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), st.busy) : null,
       st.err ? h('div', { class: 'banner warn' }, st.err) : null));
 
     if (g.eff === 'walk'){
+      const pois = (g.L && g.L.pois) || [];
       body.push(h('div', { class: 'sec' },
-        h('div', { class: 'seg-row', role: 'group', 'aria-label': 'Style de trajet' },
-          h('button', { class: 'seg' + (g.style === 'fonctionnel' ? ' on' : ''), type: 'button', onclick: () => setLeg(a, b, { style: 'fonctionnel' }) }, 'Fonctionnel'),
-          h('button', { class: 'seg' + (g.style === 'promenade' ? ' on' : ''), type: 'button', onclick: async () => { await setLeg(a, b, { style: 'promenade' }); const n = legInfo(a, b); if (n.route && !poisFresh(n, st.radius)) run('Recherche des lieux le long du trajet…', () => computePois(a, b, st.radius)); } }, 'Promenade')),
-        g.route ? h('div', { class: 'leg-sum' }, h('b', { class: 'mono' }, g.walkMin + ' min'), h('span', { class: 'mono' }, fmtDist(g.route.length)), g.via.length ? h('span', { class: 'muted' }, g.via.length + ' détour' + (g.via.length > 1 ? 's' : '')) : null)
-          : h('div', { class: 'muted' }, 'Trajet pas encore calculé' + (g.straight != null ? ' · ≈ ' + g.walkMin + ' min' : '') + '.'),
+        h('div', { class: 'spread' },
+          g.route ? h('div', { class: 'leg-sum' }, h('b', { class: 'mono' }, g.walkMin + ' min'), h('span', { class: 'mono' }, fmtDist(g.route.length)), g.via.length ? h('span', { class: 'muted' }, g.via.length + ' détour' + (g.via.length > 1 ? 's' : '')) : null)
+            : h('div', { class: 'muted' }, '≈ ' + g.walkMin + ' min à pied'),
+          h('div', { class: 'seg-row', role: 'group', 'aria-label': 'Style' },
+            seg(g.style === 'fonctionnel', 'Direct', () => setLeg(a, b, { style: 'fonctionnel' })),
+            seg(g.style === 'promenade', 'Promenade', async () => { await setLeg(a, b, { style: 'promenade' }); const n = legInfo(a, b); if (n.route && !poisFresh(n, st.radius)) run('Recherche des lieux le long du trajet…', () => computePois(a, b, st.radius)); }))),
         h('div', { class: 'row' },
-          g.route ? h('button', { class: 'btn primary', type: 'button', onclick: () => showOnMap(close) }, 'Voir sur la carte') : null,
-          h('a', { class: 'btn', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Google Maps'),
-          h('button', { class: 'btn ghost', type: 'button', onclick: () => run('Calcul du trajet à pied…', () => computeWalk(a, b)) }, g.route ? 'Recalculer' : 'Calculer'))));
-      if (g.via.length) body.push(h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Détours ajoutés'),
-        g.via.map((v, k) => h('div', { class: 'spread' }, h('span', null, String.fromCharCode(97 + k) + '. ' + v.name, v.cat ? h('span', { class: 'muted small' }, ' · ' + v.cat) : null),
+          g.route ? h('button', { class: 'btn primary', type: 'button', onclick: () => showOnMap(close) }, 'Voir sur la carte') : h('button', { class: 'btn primary', type: 'button', onclick: () => run('Calcul du trajet à pied…', () => computeWalk(a, b)) }, 'Calculer le trajet'),
+          gmapBtn, appBtn)));
+      if (g.via.length) body.push(h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Détours'),
+        g.via.map((v, k) => h('div', { class: 'spread' }, h('span', null, String.fromCharCode(97 + k) + '. ' + v.name),
           h('button', { class: 'btn ghost', type: 'button', onclick: async () => { await setLeg(a, b, { via: g.via.filter(x => x.id !== v.id) }); run('Recalcul du trajet…', () => computeWalk(a, b)); } }, 'Retirer')))));
-      if (g.style === 'promenade'){
-        const pois = g.L && g.L.pois || [];
-        body.push(h('div', { class: 'sec' },
-          h('div', { class: 'spread' }, h('div', { class: 'eyebrow' }, 'À découvrir en chemin'),
-            h('select', { id: 'poi-radius', 'aria-label': 'Distance au trajet', style: 'width:auto', onchange: e => { st.radius = +e.target.value; e.target.blur(); run('Recherche des lieux le long du trajet…', () => computePois(a, b, st.radius)); } },
-              [150, 300, 500].map(r => h('option', { value: r, selected: r === (g.L && g.L.poisRadius || st.radius) ? true : null }, 'à ' + r + ' m')))),
-          !g.route ? h('div', { class: 'muted small' }, 'Calcule d’abord le trajet.') :
-            pois.length ? pois.map(p => poiRow(a, b, g, p)) : (g.L && g.L.pois ? h('div', { class: 'muted small' }, 'Rien de notable cartographié près du trajet. Élargis la distance ou demande à Claude.') : null),
-          g.route ? h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => askClaude(promenadePrompt(a, b, g)) }, 'Demander à Claude pour ce trajet')) : null,
-          h('div', { class: 'muted small' }, 'Lieux issus d’OpenStreetMap, classés par intérêt (fiche Wikipédia, type de lieu) et proximité. « Passer par là » recalcule le trajet.')));
-      }
-      if (g.route && g.route.steps && g.route.steps.length) body.push(h('details', { class: 'sec' }, h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Instructions pas à pas (' + g.route.steps.length + ')'),
+      if (g.style === 'promenade' && g.route) body.push(h('div', { class: 'sec' },
+        h('div', { class: 'spread' }, h('div', { class: 'eyebrow' }, 'À découvrir en chemin'),
+          h('select', { id: 'poi-radius', 'aria-label': 'Distance au trajet', style: 'width:auto', onchange: e => { st.radius = +e.target.value; e.target.blur(); run('Recherche des lieux le long du trajet…', () => computePois(a, b, st.radius)); } },
+            [150, 300, 500].map(r => h('option', { value: r, selected: r === ((g.L && g.L.poisRadius) || st.radius) ? true : null }, 'à ' + r + ' m')))),
+        pois.length ? pois.slice(0, 12).map(p => poiRow(a, b, g, p)) : (g.L && g.L.pois ? h('div', { class: 'muted small' }, 'Rien de notable près du trajet.') : null),
+        h('div', null, h('button', { class: 'btn ghost', type: 'button', onclick: () => askClaude(promenadePrompt(a, b, g)) }, 'Demander à Claude'))));
+      if (g.route && g.route.steps && g.route.steps.length) body.push(h('details', { class: 'sec' }, h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Pas à pas'),
         h('ol', { class: 'steps' }, g.route.steps.map(([t, len]) => h('li', null, t, len ? h('span', { class: 'muted mono' }, ' · ' + fmtDist(len)) : null)))));
     } else if (g.eff === 'transit'){
-      const n = g.L && g.L.near;
-      body.push(h('div', { class: 'sec' },
-        h('div', { class: 'row' }, h('a', { class: 'btn primary', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Itinéraire et horaires dans Google Maps'),
-          n || navChosen(g) ? h('button', { class: 'btn', type: 'button', onclick: () => showOnMap(close) }, 'Voir sur la carte') : null),
-        h('div', { class: 'muted small' }, 'Lignes, correspondances et horaires : Google Maps. Ci-dessous, les entrées et sorties proches d’après OpenStreetMap ; vérifie la sortie conseillée par Google Maps.')));
+      const pk = (g.L && g.L.pick) || {};
       if (navKey()) body.push(navSection(a, b, g, st));
-      { const pk = (g.L && g.L.pick) || {};
-        const f = h('form', { class: 'sec', onsubmit: async e => { e.preventDefault(); const fd = new FormData(f); document.activeElement && document.activeElement.blur();
-          const pick = { min: +fd.get('min') || null, lines: String(fd.get('lines') || '').trim() || null, dep: fd.get('dep') || null, exit: String(fd.get('exit') || '').trim() || null };
-          await setLeg(a, b, { pick: pick.min || pick.lines ? pick : null }, pick.min || pick.lines ? 'Itinéraire retenu enregistré' : 'Itinéraire retenu effacé'); } },
-          h('div', { class: 'eyebrow' }, 'Itinéraire retenu'),
-          h('div', { class: 'muted small' }, navKey() ? 'Rempli automatiquement quand tu choisis un itinéraire NAVITIME ; tu peux aussi le saisir à partir de Google Maps.' : 'Choisis ton itinéraire dans Google Maps, puis note-le ici : il s’affichera dans la journée et restera disponible hors ligne.'),
-          h('div', { class: 'grid2' },
-            h('label', { class: 'f' }, 'Durée (min)', h('input', { type: 'number', name: 'min', id: 'pk-min', min: '1', max: '600', inputmode: 'numeric', value: pk.min || '' })),
-            h('label', { class: 'f' }, 'Départ', h('input', { type: 'time', name: 'dep', id: 'pk-dep', value: pk.dep || '' }))),
-          h('label', { class: 'f' }, 'Lignes et correspondances', h('input', { type: 'text', name: 'lines', id: 'pk-lines', placeholder: 'Ex. Marunouchi → Ginza', value: pk.lines || '' })),
-          h('label', { class: 'f' }, 'Sortie à prendre à l’arrivée', h('input', { type: 'text', name: 'exit', id: 'pk-exit', placeholder: 'Ex. A1', value: pk.exit || '' })),
-          h('div', null, h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')));
-        body.push(f);
-        if (pk.exit) body.push(h('div', { class: 'sec' }, h('div', { class: 'banner' }, h('b', null, 'Sortie retenue : ' + pk.exit), pk.dep ? ' · départ ' + pk.dep : '')));
-      }
-      if (n){
-        const lm = g.L.lastMile;
-        body.push(h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'À l’arrivée · ' + b.name),
-          lm && lm.exit ? h('div', { class: 'banner' }, h('b', null, lm.exit.ref ? 'Sortie ' + lm.exit.ref : 'Entrée la plus proche'), lm.exit.name ? ' · ' + lm.exit.name : '',
-            ' · ' + (lm.route ? Math.max(1, Math.round(lm.route.time / 60)) + ' min à pied (' + fmtDist(lm.route.length) + ')' : fmtDist(lm.exit.d))) : null,
-          nearList(n.b)));
-        body.push(h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Au départ · ' + a.name), nearList(n.a)));
-        body.push(h('div', { class: 'sec' }, h('button', { class: 'btn ghost', type: 'button', onclick: () => run('Recherche des entrées de métro et arrêts…', () => computeNear(a, b)) }, 'Actualiser')));
-      } else body.push(h('div', { class: 'sec' }, h('button', { class: 'btn', type: 'button', onclick: () => run('Recherche des entrées de métro et arrêts…', () => computeNear(a, b)) }, 'Chercher les entrées de métro et arrêts')));
+      else if (pk.min || pk.lines) body.push(h('div', { class: 'sec' }, h('div', { class: 'banner' }, h('b', null, 'Retenu : '), [pk.min ? pk.min + ' min' : '', pk.lines, pk.exit ? 'sortie ' + pk.exit : '', pk.dep ? 'départ ' + pk.dep : ''].filter(Boolean).join(' · '))));
+      body.push(h('div', { class: 'sec' }, h('div', { class: 'row' },
+        navChosen(g) ? h('button', { class: 'btn', type: 'button', onclick: () => showOnMap(close) }, 'Voir sur la carte') : null, gmapBtn, appBtn)));
+      const f = h('form', { class: 'form', style: 'padding:0', onsubmit: async e => { e.preventDefault(); const fd = new FormData(f); document.activeElement && document.activeElement.blur();
+        const pick = { min: +fd.get('min') || null, lines: String(fd.get('lines') || '').trim() || null, dep: fd.get('dep') || null, exit: String(fd.get('exit') || '').trim() || null };
+        await setLeg(a, b, { pick: pick.min || pick.lines ? pick : null }, pick.min || pick.lines ? 'Itinéraire enregistré' : 'Itinéraire effacé'); } },
+        h('div', { class: 'grid2' },
+          h('label', { class: 'f' }, 'Durée (min)', h('input', { type: 'number', name: 'min', id: 'pk-min', min: '1', max: '600', inputmode: 'numeric', value: pk.min || '' })),
+          h('label', { class: 'f' }, 'Départ', h('input', { type: 'time', name: 'dep', id: 'pk-dep', value: pk.dep || '' }))),
+        h('label', { class: 'f' }, 'Lignes', h('input', { type: 'text', name: 'lines', id: 'pk-lines', placeholder: 'Ex. Marunouchi → Ginza', value: pk.lines || '' })),
+        h('label', { class: 'f' }, 'Sortie à l’arrivée', h('input', { type: 'text', name: 'exit', id: 'pk-exit', placeholder: 'Ex. A1', value: pk.exit || '' })),
+        h('div', null, h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')));
+      body.push(h('details', { class: 'sec' }, h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Saisir un itinéraire à la main'), f));
     } else {
-      body.push(h('div', { class: 'sec' }, h('div', { class: 'row' }, h('a', { class: 'btn primary', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Itinéraire en voiture dans Google Maps')),
-        h('div', { class: 'muted small' }, fmtDist(g.straight) + ' à vol d’oiseau. Montre l’adresse de destination au chauffeur, elle est dans la fiche du lieu.')));
+      body.push(h('div', { class: 'sec' }, h('div', { class: 'muted' }, fmtDist(g.straight) + ' à vol d’oiseau'), h('div', { class: 'row' }, gmapBtn, appBtn)));
     }
-    if (gKey()) body.push(h('div', { class: 'sec' }, h('div', { class: 'row' },
-      h('button', { class: 'btn' + (g.eff === 'transit' ? ' primary' : ''), type: 'button', onclick: () => openGmap(a, b, g.eff, g.via) }, 'Carte Google de ce trajet'),
-      h('span', { class: 'muted small' }, S.online ? 'Itinéraire Google affiché dans Tabi (en ligne).' : 'Disponible en ligne uniquement.'))));
-    if (g.route && g.eff === 'walk') body.push(h('div', { class: 'sec muted small' }, 'Tracé : ' + (g.route.engine === 'osrm' ? 'OSRM' : 'Valhalla') + ', données © OpenStreetMap · calculé le ' + fmtDay(isoDay(new Date(g.route.at))) + ' ' + fmtTime(g.route.at)));
     return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Trajet' },
-      sheetHead(a.name + ' → ' + b.name, close), ...body, h('div', { style: 'height:10px' }));
+      sheetHead(a.name + ' → ' + b.name, close), ...body, h('div', { style: 'height:12px' }));
   });
 }
 /* ---- Carte Google intégrée (Maps Embed API, clé rangée dans le Drive : data/config_config.json) ---- */
@@ -1124,17 +1092,18 @@ function navDefaultTime(a){
   return pad2(Math.floor(m / 60) % 24) + ':' + pad2(m % 60);
 }
 async function navSearch(a, b, st){
-  if (!S.online){ st.err = 'Hors ligne : recherche NAVITIME impossible maintenant.'; S.sheet && S.sheet.render(); return; }
+  if (st.navBusy) return;
+  if (!navigator.onLine){ st.err = 'Hors ligne : recherche NAVITIME impossible maintenant.'; S.sheet && S.sheet.render(); return; }
   if (navUsage() >= navQuota()){ st.err = 'Quota mensuel NAVITIME atteint (' + navQuota() + ' requêtes).'; S.sheet && S.sheet.render(); return; }
   const day = b.day || a.day || currentDay();
-  st.busy = 'Recherche NAVITIME…'; st.err = ''; S.sheet && S.sheet.render();
+  st.navBusy = true; st.err = ''; S.sheet && S.sheet.render();
   try {
     const routes = await navitimeRoutes(navKey(), a, b, day + 'T' + st.navTime + ':00');
     await bumpNav();
     await setLeg(a, b, { nav: { routes, chosen: null, time: st.navTime, day, at: new Date().toISOString(), sig: legSig(a, b, []) } });
     if (!routes.length) st.err = 'NAVITIME n’a trouvé aucun itinéraire pour ce trajet.';
   } catch (e){ console.warn('Tabi NAVITIME', e); st.err = e.message || String(e); if (e.status) await bumpNav().catch(() => {}); }
-  st.busy = ''; S.sheet && S.sheet.render();
+  st.navBusy = false; S.sheet && S.sheet.render();
 }
 async function navChoose(a, b, i){
   const g = legInfo(a, b); const N = g.L.nav; const r = N.routes[i];
@@ -1163,7 +1132,7 @@ function navSection(a, b, g, st){
     h('div', { class: 'eyebrow' }, 'Itinéraires NAVITIME'),
     h('div', { class: 'row', style: 'flex-wrap:nowrap' },
       h('label', { class: 'f', style: 'flex-direction:row;align-items:center;gap:8px' }, 'Départ', h('input', { type: 'time', id: 'nav-time', value: st.navTime, style: 'width:auto', onchange: e => { st.navTime = e.target.value || st.navTime; } })),
-      h('button', { class: 'btn primary', type: 'button', disabled: st.busy || !S.online ? true : null, onclick: () => navSearch(a, b, st) }, N ? 'Relancer' : 'Chercher')),
+      h('button', { class: 'btn primary', type: 'button', disabled: st.navBusy ? true : null, onclick: () => navSearch(a, b, st) }, st.navBusy ? 'Recherche…' : N ? 'Relancer' : 'Chercher')),
     h('div', { class: 'muted small' }, used + ' / ' + q + ' requêtes ce mois · horaires indicatifs, à confirmer sur place' + (N ? ' · recherché le ' + fmtDay(isoDay(new Date(N.at))) + ' pour ' + N.time : '')),
     N ? N.routes.map((r, i) => h('div', { class: 'nav-route' + (N.chosen === i ? ' on' : '') },
       h('div', { class: 'spread' }, h('b', { class: 'mono' }, (r.dep || '?') + ' → ' + (r.arr || '?')),
@@ -1256,7 +1225,6 @@ async function prepareDayLegs(day){
     try {
       if (!g.route && g.straight < 8000) await computeWalk(a, b);
       const g2 = legInfo(a, b);
-      if (g2.eff === 'transit' && !nearFresh(g2)) await computeNear(a, b);
       if (g2.eff === 'walk' && g2.style === 'promenade' && !(g2.L && g2.L.pois)) await computePois(a, b, 300);
       n++;
     } catch (e){ console.warn(e); fail++; }
