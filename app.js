@@ -316,46 +316,157 @@ const dist = (a, b) => { const R = 6371e3, t = Math.PI / 180, dLa = (b.lat - a.l
 const fmtDist = m => m < 950 ? Math.round(m / 10) * 10 + ' m' : (m / 1000).toFixed(m < 9500 ? 1 : 0).replace('.', ',') + ' km';
 
 /* ================= carte ================= */
-const M = { el: null, map: null, markers: [], ready: false, placing: null, focus: null, sig: '', showIdeas: LS.get('tabi.ideas') === '1' };
+// Deux moteurs derrière la même interface : Google Maps (en ligne, si la clé l'autorise) et MapLibre/OpenStreetMap (toujours, hors ligne compris).
+const M = { el: null, eng: null, kind: null, ready: false, placing: null, focus: null, sig: '', showIdeas: LS.get('tabi.ideas') === '1', transit: LS.get('tabi.transit') !== '0' };
+const G = { failed: false, loading: null };
+const mapPref = () => LS.get('tabi.mapEngine') || 'auto';
+function wantedEngine(){
+  if (mapPref() === 'osm') return 'osm';
+  if (gKey() && S.online && !G.failed) return 'google';
+  return 'osm';
+}
 function mapPanel(){
-  if (M.el) return M.el;
-  M.inner = h('div', { style: 'position:absolute;inset:0' });
-  M.msg = h('div', { class: 'map-msg' }, 'Chargement de la carte…');
-  M.banner = h('div', { class: 'map-banner', hidden: true });
-  M.tools = h('div', { class: 'map-tools' });
-  M.el = h('div', { class: 'map' }, M.inner, M.msg, M.banner, M.tools);
-  if (!window.maplibregl){ M.msg.textContent = 'Carte indisponible : la bibliothèque cartographique ne s’est pas chargée.'; return M.el; }
-  try {
-    M.map = new maplibregl.Map({ container: M.inner, style: CONFIG.mapStyle, center: [139.75, 35.68], zoom: 11, attributionControl: false, cooperativeGestures: false });
-  } catch (e){ M.msg.textContent = 'Carte indisponible sur cet appareil (WebGL).'; return M.el; }
-  M.map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
-  M.map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
-  M.map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), 'top-right');
-  M.map.on('load', () => {
-    M.ready = true; M.msg.hidden = true;
-    const css = getComputedStyle(document.documentElement);
-    M.map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    const col = n => css.getPropertyValue(n).trim();
-    M.map.addLayer({ id: 'route-straight', type: 'line', source: 'route', filter: ['all', ['==', ['get', 'done'], false], ['==', ['get', 'kind'], 'straight']], paint: { 'line-color': col('--route') || '#8A93AB', 'line-width': 3, 'line-dasharray': [2, 2] } });
-    M.map.addLayer({ id: 'route-walk', type: 'line', source: 'route', filter: ['all', ['==', ['get', 'done'], false], ['==', ['get', 'kind'], 'walk']], layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': col('--route') || '#8A93AB', 'line-width': 4 } });
-    M.map.addLayer({ id: 'route-done', type: 'line', source: 'route', filter: ['==', ['get', 'done'], true], layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': col('--stamp') || '#6338B0', 'line-width': 4 } });
-    M.map.addSource('over', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    M.map.addLayer({ id: 'over-line', type: 'line', source: 'over', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 3, 'line-opacity': 0.85 } });
-    M.map.addSource('focus', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    M.map.addLayer({ id: 'focus-casing', type: 'line', source: 'focus', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
-    M.map.addLayer({ id: 'focus-line', type: 'line', source: 'focus', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': col('--stamp') || '#6338B0', 'line-width': 5 } });
-    M.sig = ''; updateMap();
-  });
-  M.map.on('error', e => { if (!M.ready){ M.msg.hidden = false; M.msg.textContent = S.online ? 'Fond de carte indisponible pour le moment.' : 'Hors ligne : seules les zones préparées s’affichent.'; } console.warn('Tabi carte', e && e.error); });
-  M.map.on('click', e => {
-    if (!M.placing) return;
-    const { lng, lat } = e.lngLat; const job = M.placing; M.placing = null; M.banner.hidden = true;
-    job({ lat: +lat.toFixed(6), lng: +lng.toFixed(6) });
-  });
+  if (!M.el){
+    M.inner = h('div', { style: 'position:absolute;inset:0' });
+    M.msg = h('div', { class: 'map-msg' }, 'Chargement de la carte…');
+    M.banner = h('div', { class: 'map-banner', hidden: true });
+    M.tools = h('div', { class: 'map-tools' });
+    M.badge = h('button', { class: 'map-badge', type: 'button', onclick: () => {
+      const next = M.kind === 'google' ? 'osm' : 'auto';
+      if (next === 'auto' && !gKey()){ toast('Ajoute la clé Google dans les réglages du voyage.'); return; }
+      if (next === 'auto' && !S.online){ toast('Carte Google disponible en ligne uniquement.'); return; }
+      G.failed = false; LS.set('tabi.mapEngine', next); ensureEngine(); } });
+    M.el = h('div', { class: 'map' }, M.inner, M.msg, M.banner, M.tools, M.badge);
+  }
+  ensureEngine();
   return M.el;
 }
+function ensureEngine(){
+  const want = wantedEngine();
+  if (M.kind === want && M.eng) return;
+  if (M.eng){ try { M.eng.destroy(); } catch {} }
+  M.eng = null; M.ready = false; M.kind = want; M.sig = ''; M.msg.hidden = false; M.msg.textContent = 'Chargement de la carte…';
+  M.inner.replaceChildren(); const box = h('div', { style: 'position:absolute;inset:0' }); M.inner.append(box);
+  M.badge.textContent = want === 'google' ? 'Google · passer à OSM' : (gKey() ? 'OSM · passer à Google' : 'OpenStreetMap');
+  M.badge.hidden = !gKey();
+  const eng = want === 'google' ? googleEngine(box) : osmEngine(box);
+  M.eng = eng;
+}
+function engineReady(eng){ if (M.eng !== eng) return; M.ready = true; M.msg.hidden = true; M.sig = ''; if (S.view === 'jour' || S.view === 'itin') updateMap(); }
+function mapClicked(c){
+  if (!M.placing) return;
+  const job = M.placing; M.placing = null; M.banner.hidden = true;
+  job({ lat: +c.lat.toFixed(6), lng: +c.lng.toFixed(6) });
+}
+
+/* ---- moteur OpenStreetMap (MapLibre) ---- */
+function osmEngine(box){
+  const eng = { markers: [] };
+  if (!window.maplibregl){ M.msg.textContent = 'Carte indisponible : la bibliothèque cartographique ne s’est pas chargée.'; return eng; }
+  let map;
+  try { map = new maplibregl.Map({ container: box, style: CONFIG.mapStyle, center: [139.75, 35.68], zoom: 11, attributionControl: false }); }
+  catch { M.msg.textContent = 'Carte indisponible sur cet appareil (WebGL).'; return eng; }
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+  map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
+  map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), 'top-right');
+  map.on('load', () => {
+    map.addSource('lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    const lay = { 'line-join': 'round', 'line-cap': 'round' };
+    map.addLayer({ id: 'l-casing', type: 'line', source: 'lines', filter: ['==', ['get', 'casing'], true], layout: lay, paint: { 'line-color': '#ffffff', 'line-width': ['+', ['get', 'width'], 4], 'line-opacity': 0.9 } });
+    map.addLayer({ id: 'l-solid', type: 'line', source: 'lines', filter: ['!=', ['get', 'dash'], true], layout: lay, paint: { 'line-color': ['get', 'color'], 'line-width': ['get', 'width'], 'line-opacity': ['get', 'opacity'] } });
+    map.addLayer({ id: 'l-dash', type: 'line', source: 'lines', filter: ['==', ['get', 'dash'], true], paint: { 'line-color': ['get', 'color'], 'line-width': ['get', 'width'], 'line-dasharray': [2, 2] } });
+    engineReady(eng);
+  });
+  map.on('error', e => { if (!M.ready){ M.msg.hidden = false; M.msg.textContent = S.online ? 'Fond de carte indisponible pour le moment.' : 'Hors ligne : seules les zones préparées s’affichent.'; } console.warn('Tabi carte', e && e.error); });
+  map.on('click', e => mapClicked({ lat: e.lngLat.lat, lng: e.lngLat.lng }));
+  Object.assign(eng, {
+    clear(){ eng.markers.forEach(m => m.remove()); eng.markers = []; },
+    marker(el, p, offX){ eng.markers.push(new maplibregl.Marker({ element: el, offset: [offX || 0, 0] }).setLngLat([p.lng, p.lat]).addTo(map)); },
+    lines(list){ const s = map.getSource('lines'); if (s) s.setData({ type: 'FeatureCollection', features: list.map(l => ({ type: 'Feature', properties: { color: l.color, width: l.width || 3, dash: !!l.dash, casing: !!l.casing, opacity: l.opacity ?? 1 }, geometry: { type: 'LineString', coordinates: l.coords } })) }); },
+    fit(coords, maxZoom, animate){ if (coords.length === 1) map.jumpTo({ center: coords[0], zoom: Math.min(15, maxZoom) }); else if (coords.length > 1){ const b = new maplibregl.LngLatBounds(); coords.forEach(c => b.extend(c)); map.fitBounds(b, { padding: 50, maxZoom, duration: animate ? 600 : 0 }); } },
+    fly(p, zoom){ map.flyTo({ center: [p.lng, p.lat], zoom }); },
+    resize(){ map.resize(); },
+    destroy(){ eng.clear(); map.remove(); },
+    // couche transports : propre à Google
+    transit(){},
+  });
+  return eng;
+}
+
+/* ---- moteur Google Maps (Maps JavaScript API) ---- */
+function loadGoogleMaps(){
+  if (window.google && google.maps && google.maps.Map) return Promise.resolve();
+  if (G.loading) return G.loading;
+  G.loading = new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('délai')), 15000);
+    window.__tabiGmaps = () => { clearTimeout(t); res(); };
+    window.gm_authFailure = () => { G.failed = true; toast('Carte Google refusée : active « Maps JavaScript API » et ajoute-la aux API autorisées de la clé.'); ensureEngine(); };
+    const s = document.createElement('script');
+    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(gKey()) + '&language=fr&region=JP&callback=__tabiGmaps&loading=async';
+    s.async = true; s.onerror = () => { clearTimeout(t); rej(new Error('chargement')); };
+    document.head.append(s);
+  }).catch(e => { G.loading = null; throw e; });
+  return G.loading;
+}
+function googleEngine(box){
+  const eng = { markers: [], polys: [] };
+  let map = null, transitLayer = null, me = null, watch = null;
+  loadGoogleMaps().then(() => {
+    if (M.eng !== eng) return;
+    map = new google.maps.Map(box, { center: { lat: 35.68, lng: 139.75 }, zoom: 11, mapTypeControl: false, streetViewControl: false, fullscreenControl: true, clickableIcons: true, gestureHandling: 'greedy' });
+    transitLayer = new google.maps.TransitLayer(); if (M.transit) transitLayer.setMap(map);
+    map.addListener('click', e => { if (M.placing && e.latLng){ if (e.stop) e.stop(); mapClicked({ lat: e.latLng.lat(), lng: e.latLng.lng() }); } });
+    google.maps.event.addListenerOnce(map, 'idle', () => engineReady(eng));
+  }).catch(e => { console.warn('Tabi Google Maps', e); if (M.eng === eng){ G.failed = true; toast('Carte Google indisponible, retour à OpenStreetMap.'); ensureEngine(); } });
+  function overlay(el, p, offX){
+    const o = new google.maps.OverlayView();
+    o.onAdd = () => { el.style.position = 'absolute'; o.getPanes().overlayMouseTarget.appendChild(el); google.maps.OverlayView.preventMapHitsAndGesturesFrom(el); };
+    o.draw = () => { const pt = o.getProjection().fromLatLngToDivPixel(new google.maps.LatLng(p.lat, p.lng)); if (!pt) return;
+      el.style.left = (pt.x - el.offsetWidth / 2 + (offX || 0)) + 'px'; el.style.top = (pt.y - el.offsetHeight / 2) + 'px'; };
+    o.onRemove = () => el.remove();
+    o.setMap(map); return o;
+  }
+  Object.assign(eng, {
+    clear(){ eng.markers.forEach(m => m.setMap(null)); eng.markers = []; },
+    marker(el, p, offX){ if (map) eng.markers.push(overlay(el, p, offX)); },
+    lines(list){
+      eng.polys.forEach(p => p.setMap(null)); eng.polys = []; if (!map) return;
+      for (const l of list){
+        const path = l.coords.map(([lng, lat]) => ({ lat, lng }));
+        if (l.casing) eng.polys.push(new google.maps.Polyline({ map, path, strokeColor: '#ffffff', strokeOpacity: 0.9, strokeWeight: (l.width || 3) + 4, zIndex: 1 }));
+        eng.polys.push(l.dash
+          ? new google.maps.Polyline({ map, path, strokeOpacity: 0, zIndex: 2, icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, strokeColor: l.color, scale: (l.width || 3) }, offset: '0', repeat: '14px' }] })
+          : new google.maps.Polyline({ map, path, strokeColor: l.color, strokeOpacity: l.opacity ?? 1, strokeWeight: l.width || 3, zIndex: 2 }));
+      }
+    },
+    fit(coords, maxZoom){
+      if (!map) return;
+      if (coords.length === 1){ map.setCenter({ lat: coords[0][1], lng: coords[0][0] }); map.setZoom(Math.min(15, maxZoom)); return; }
+      if (!coords.length) return;
+      const b = new google.maps.LatLngBounds(); coords.forEach(([lng, lat]) => b.extend({ lat, lng }));
+      map.fitBounds(b, 50);
+      google.maps.event.addListenerOnce(map, 'idle', () => { if (map.getZoom() > maxZoom) map.setZoom(maxZoom); });
+    },
+    fly(p, zoom){ if (map){ map.panTo({ lat: p.lat, lng: p.lng }); map.setZoom(zoom); } },
+    resize(){},
+    destroy(){ eng.clear(); eng.polys.forEach(p => p.setMap(null)); if (watch != null) navigator.geolocation.clearWatch(watch); box.remove(); },
+    transit(on){ if (transitLayer) transitLayer.setMap(on ? map : null); },
+    locate(){
+      if (!navigator.geolocation){ toast('Position indisponible sur cet appareil.'); return; }
+      if (watch != null){ navigator.geolocation.clearWatch(watch); watch = null; if (me) me.setMap(null); me = null; toast('Suivi de position arrêté'); return; }
+      let first = true;
+      watch = navigator.geolocation.watchPosition(pos => {
+        const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        if (me) me.setMap(null); me = overlay(h('div', { class: 'me-dot' }), p);
+        if (first){ first = false; map.panTo(p); if (map.getZoom() < 15) map.setZoom(16); }
+      }, () => toast('Position refusée ou indisponible.'), { enableHighAccuracy: true });
+    },
+  });
+  return eng;
+}
+
 function startPlacing(text, cb){
-  if (!M.map){ toast('Carte indisponible.'); return; }
+  if (!M.eng){ toast('Carte indisponible.'); return; }
   if (S.sheet) S.sheet.close();
   if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); }
   M.placing = cb;
@@ -363,71 +474,83 @@ function startPlacing(text, cb){
   M.banner.hidden = false; M.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 function markerEl(cls, text, onclick, title){
-  const el = h('button', { class: 'mk ' + cls, type: 'button', title, 'aria-label': title, onclick: e => { e.stopPropagation(); onclick(); } }, text);
-  return el;
+  return h('button', { class: 'mk ' + cls, type: 'button', title, 'aria-label': title, onclick: e => { e.stopPropagation(); onclick(); } }, text);
+}
+function mapTools(extra){
+  const tools = [...(extra || [])];
+  if (M.kind === 'google'){
+    tools.push(h('button', { class: 'btn', type: 'button', onclick: () => M.eng.locate && M.eng.locate() }, '◎ Ma position'));
+    tools.push(h('button', { class: 'btn', type: 'button', 'aria-pressed': String(M.transit), onclick: () => { M.transit = !M.transit; LS.set('tabi.transit', M.transit ? '1' : '0'); M.eng.transit(M.transit); updateMap(); } }, M.transit ? 'Masquer métro' : 'Lignes de métro'));
+  }
+  M.tools.replaceChildren(...tools);
 }
 function updateMap(){
-  if (!M.map) return;
+  if (!M.el) return;
+  ensureEngine();
+  if (!M.eng) return;
   if (S.view === 'itin'){ updateOverview(); return; }
-  { const o = M.map.getSource && M.ready && M.map.getSource('over'); if (o) o.setData({ type: 'FeatureCollection', features: [] }); }
   const day = currentDay();
-  M.tools.replaceChildren(
-    h('button', { class: 'btn', type: 'button', onclick: () => startPlacing('Touche la carte pour placer le nouveau lieu', c => openPlaceForm({ day, lat: c.lat, lng: c.lng, coordSource: 'carte' })) }, '＋ Lieu sur la carte'),
-    h('button', { class: 'btn', type: 'button', 'aria-pressed': String(M.showIdeas), onclick: () => { M.showIdeas = !M.showIdeas; LS.set('tabi.ideas', M.showIdeas ? '1' : '0'); M.sig = ''; updateMap(); } }, M.showIdeas ? 'Masquer les idées' : 'Voir les idées'));
+  mapTools([
+    h('button', { class: 'btn', type: 'button', onclick: () => startPlacing('Touche la carte pour placer le nouveau lieu', c => openPlaceForm({ day, lat: c.lat, lng: c.lng, coordSource: 'carte' })) }, '＋ Lieu'),
+    h('button', { class: 'btn', type: 'button', 'aria-pressed': String(M.showIdeas), onclick: () => { M.showIdeas = !M.showIdeas; LS.set('tabi.ideas', M.showIdeas ? '1' : '0'); M.sig = ''; updateMap(); } }, M.showIdeas ? 'Masquer les idées' : 'Idées')]);
   if (!M.ready || !day) return;
+  const E = M.eng; E.clear();
   const { seq } = daySeq(day);
   const pts = seq.filter(hasPos);
   const ps = seq.filter(p => !p.anchor);
   const ideas = M.showIdeas ? placesOf(null).filter(hasPos) : [];
-  M.markers.forEach(m => m.remove()); M.markers = [];
-  const add = (el, p) => M.markers.push(new maplibregl.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(M.map));
-  for (const p of ideas) add(markerEl('i', '?', () => openPlace(p.id), 'Idée : ' + p.name), p);
+  const css = getComputedStyle(document.documentElement); const col = n => css.getPropertyValue(n).trim();
+  const cRoute = col('--route') || '#8A93AB', cStamp = col('--stamp') || '#6338B0';
+  for (const p of ideas) E.marker(markerEl('i', '?', () => openPlace(p.id), 'Idée : ' + p.name), p);
   pts.forEach(p => {
     const i = ps.indexOf(p);
-    add(p.anchor ? (() => { const el = markerEl('h', 'H', () => openBooking(p.bookingId), p.name); const c = dayColor(dayIdx(day)); el.style.background = c; el.style.borderColor = c; el.style.color = '#fff'; return el; })()
+    E.marker(p.anchor ? (() => { const el = markerEl('h', 'H', () => openBooking(p.bookingId), p.name); const c = dayColor(dayIdx(day)); el.style.background = c; el.style.borderColor = c; el.style.color = '#fff'; return el; })()
       : markerEl((p.status === 'visited' ? 'v' : '') + (p.status === 'skipped' ? ' s' : ''), String(i + 1), () => openPlace(p.id), (i + 1) + '. ' + p.name), p);
   });
   // tracés de la journée : tracé à pied réel quand il est calculé, sinon ligne droite pointillée
-  const feats = [];
+  const lines = [];
   for (let j = 1; j < pts.length; j++){
     const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
     const done = (a.anchor || a.status === 'visited') && !b.anchor && b.status === 'visited';
-    const coords = g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]];
-    feats.push({ type: 'Feature', properties: { done, kind: g.eff === 'walk' && g.route ? 'walk' : 'straight' }, geometry: { type: 'LineString', coordinates: coords } });
+    const walk = g.eff === 'walk' && g.route;
+    lines.push({ coords: walk ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]], color: done ? cStamp : cRoute, width: walk || done ? 4 : 3, dash: !walk && !done });
   }
-  const src = M.map.getSource('route'); if (src) src.setData({ type: 'FeatureCollection', features: feats });
   // trajet mis en avant (fiche trajet)
   const F = M.focus && legFromId(M.focus, day);
-  const ffeats = [];
+  const focusCoords = [];
   if (F){
     const g = legInfo(F.a, F.b);
-    if (g.eff === 'walk' && g.route) ffeats.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: shapeCoords(g.route) } });
-    if (g.eff !== 'walk' && g.L && g.L.lastMile && g.L.lastMile.route) ffeats.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: shapeCoords(g.L.lastMile.route) } });
+    const fl = [];
+    if (g.eff === 'walk' && g.route) fl.push(shapeCoords(g.route));
+    if (g.eff !== 'walk' && g.L && g.L.lastMile && g.L.lastMile.route) fl.push(shapeCoords(g.L.lastMile.route));
+    fl.forEach(c => { lines.push({ coords: c, color: cStamp, width: 5, casing: true }); focusCoords.push(...c); });
     if (g.eff === 'walk'){
-      g.via.forEach((v, k) => add(markerEl('via', String.fromCharCode(97 + k), () => openLeg(F.a, F.b), 'Étape : ' + v.name), v));
-      if (g.style === 'promenade' && g.L && g.L.pois) for (const p of g.L.pois) if (!g.via.some(v => v.id === p.id)) add(markerEl('poi', '★', () => openPoi(F.a, F.b, p), p.cat + ' : ' + p.name), p);
+      g.via.forEach((v, k) => E.marker(markerEl('via', String.fromCharCode(97 + k), () => openLeg(F.a, F.b), 'Étape : ' + v.name), v));
+      if (g.style === 'promenade' && g.L && g.L.pois) for (const p of g.L.pois) if (!g.via.some(v => v.id === p.id)) E.marker(markerEl('poi', '★', () => openPoi(F.a, F.b, p), p.cat + ' : ' + p.name), p);
     } else if (g.eff === 'transit' && g.L && g.L.near){
       for (const side of ['a', 'b']){ const n = g.L.near[side]; if (!n) continue;
-        n.entrances.slice(0, 8).forEach(e => add(markerEl('ent', e.ref || 'M', () => toast((e.ref ? 'Sortie ' + e.ref : 'Entrée') + (e.name ? ' · ' + e.name : '') + ' · ' + fmtDist(e.d)), 'Entrée/sortie ' + (e.ref || '')), e));
-        n.bus.slice(0, 4).forEach(s => add(markerEl('bus', 'B', () => toast('Bus : ' + s.name + ' · ' + fmtDist(s.d)), 'Arrêt de bus ' + s.name), s)); }
+        n.entrances.slice(0, 8).filter(hasPos).forEach(e => E.marker(markerEl('ent', e.ref || 'M', () => toast((e.ref ? 'Sortie ' + e.ref : 'Entrée') + (e.name ? ' · ' + e.name : '') + (num(e.d) != null ? ' · ' + fmtDist(e.d) : '')), 'Entrée/sortie ' + (e.ref || '')), e));
+        n.bus.slice(0, 4).filter(hasPos).forEach(s => E.marker(markerEl('bus', 'B', () => toast('Bus : ' + s.name + (num(s.d) != null ? ' · ' + fmtDist(s.d) : '')), 'Arrêt de bus ' + s.name), s)); }
     }
     if (!M.placing){
       M.banner.replaceChildren(h('span', null, F.a.name + ' → ' + F.b.name + ' · ' + legLabel(g)), h('button', { class: 'btn', type: 'button', onclick: () => { M.focus = null; M.banner.hidden = true; M.sig = ''; updateMap(); } }, 'Fermer'));
       M.banner.hidden = false;
     }
   } else if (!M.placing) M.banner.hidden = true;
-  const fsrc = M.map.getSource('focus'); if (fsrc) fsrc.setData({ type: 'FeatureCollection', features: ffeats });
-  // cadrage : seulement quand la journée ou le trajet affiché change
-  const sig = day + '|' + (F ? M.focus : '') + '|' + pts.length;
+  E.lines(lines);
+  // cadrage : seulement quand la journée, le trajet affiché ou le moteur change
+  const sig = M.kind + '|' + day + '|' + (F ? M.focus : '') + '|' + pts.length;
   if (sig !== M.sig){
     let fit = pts.length ? pts.map(p => [p.lng, p.lat]) : ideas.map(p => [p.lng, p.lat]);
-    if (F){ const c = ffeats.flatMap(f => f.geometry.coordinates); fit = c.length ? c : [[F.a.lng, F.a.lat], [F.b.lng, F.b.lat]]; }
-    if (fit.length === 1) M.map.jumpTo({ center: fit[0], zoom: 15 });
-    else if (fit.length > 1){ const b = new maplibregl.LngLatBounds(); fit.forEach(c => b.extend(c)); M.map.fitBounds(b, { padding: 50, maxZoom: 17, duration: F ? 600 : 0 }); }
+    if (F) fit = focusCoords.length ? focusCoords : [[F.a.lng, F.a.lat], [F.b.lng, F.b.lat]];
+    E.fit(fit, 17, !!F);
   }
   M.sig = sig;
-  requestAnimationFrame(() => M.map && M.map.resize());
+  requestAnimationFrame(() => M.eng && M.eng.resize());
 }
+// passage en ligne / hors ligne : Google en ligne, OpenStreetMap sinon
+window.addEventListener('online', () => { if (M.el && mapPref() !== 'osm'){ G.failed = false; ensureEngine(); } });
+window.addEventListener('offline', () => { if (M.el && M.kind === 'google') ensureEngine(); });
 
 /* ---- carte hors ligne : pré-téléchargement des tuiles d'une zone ---- */
 function tilesFor(b, z){
@@ -601,18 +724,16 @@ function viewItin(){
   ];
 }
 function updateOverview(){
-  M.tools.replaceChildren();
+  mapTools([]);
   if (!M.focus && !M.placing) M.banner.hidden = true;
   if (!M.ready) return;
-  M.markers.forEach(m => m.remove()); M.markers = [];
-  const empty = { type: 'FeatureCollection', features: [] };
-  for (const id of ['route', 'focus']){ const s = M.map.getSource(id); if (s) s.setData(empty); }
-  const ds = tripDays(); const feats = []; const fit = []; const pins = [];
+  const E = M.eng; E.clear();
+  const ds = tripDays(); const lines = []; const fit = []; const pins = [];
   ds.forEach((d, i) => {
     const { A, ps, seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
     for (let j = 1; j < pts.length; j++){
       const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
-      feats.push({ type: 'Feature', properties: { color: col }, geometry: { type: 'LineString', coordinates: g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]] } });
+      lines.push({ coords: g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]], color: col, width: 3, opacity: 0.85 });
     }
     // lieux du jour : petits points à la couleur du jour
     const placed = ps.filter(hasPos);
@@ -620,7 +741,7 @@ function updateOverview(){
       fit.push([p.lng, p.lat]);
       const el = h('button', { class: 'dot' + (p.status === 'visited' ? ' v' : ''), type: 'button', title: 'J' + (i + 1) + ' · ' + p.name, 'aria-label': 'J' + (i + 1) + ' · ' + p.name, onclick: e => { e.stopPropagation(); goDay(d); } });
       el.style.setProperty('--c', col);
-      M.markers.push(new maplibregl.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(M.map));
+      E.marker(el, p);
     });
     // repère du jour : son numéro, au centre de ses lieux (ou à l'hôtel de la nuit si journée libre)
     let at = null;
@@ -634,16 +755,12 @@ function updateOverview(){
   for (const g of groups.values()) g.forEach((pn, k) => {
     const el = markerEl('daypin', String(pn.i + 1), () => goDay(pn.d), 'Jour ' + (pn.i + 1) + ' · ' + fmtDay(pn.d));
     el.style.background = pn.col; el.style.borderColor = '#fff';
-    M.markers.push(new maplibregl.Marker({ element: el, offset: [(k - (g.length - 1) / 2) * 30, 0] }).setLngLat([pn.at.lng, pn.at.lat]).addTo(M.map));
+    E.marker(el, pn.at, (k - (g.length - 1) / 2) * 30);
   });
-  const o = M.map.getSource('over'); if (o) o.setData({ type: 'FeatureCollection', features: feats });
-  const sig = 'itin|' + fit.length;
-  if (sig !== M.sig){
-    if (fit.length === 1) M.map.jumpTo({ center: fit[0], zoom: 13 });
-    else if (fit.length > 1){ const b = new maplibregl.LngLatBounds(); fit.forEach(c => b.extend(c)); M.map.fitBounds(b, { padding: 50, maxZoom: 15, duration: 0 }); }
-    M.sig = sig;
-  }
-  requestAnimationFrame(() => M.map && M.map.resize());
+  E.lines(lines);
+  const sig = M.kind + '|itin|' + fit.length;
+  if (sig !== M.sig){ E.fit(fit, 15, false); M.sig = sig; }
+  requestAnimationFrame(() => M.eng && M.eng.resize());
 }
 
 /* ---- Journée ---- */
@@ -811,7 +928,7 @@ function legInfo(a, b){
 function legLabel(g){
   if (!g.ok) return 'Position manquante';
   if (g.eff === 'walk') return `À pied${g.style === 'promenade' ? ' · promenade' : ''} · ${g.estimated ? '≈ ' : ''}${g.walkMin} min · ${fmtDist(g.route ? g.route.length : g.straight * 1.25)}`;
-  if (g.eff === 'transit') return 'Transports · ' + fmtDist(g.straight) + ' à vol d’oiseau';
+  if (g.eff === 'transit'){ const t = g.L && g.L.pick; return t && t.min ? 'Transports · ' + t.min + ' min' + (t.lines ? ' · ' + t.lines : '') : 'Transports · ' + fmtDist(g.straight) + ' à vol d’oiseau'; }
   return 'Taxi · ' + fmtDist(g.straight) + ' à vol d’oiseau';
 }
 function legUrlFor(a, b){
@@ -858,6 +975,7 @@ async function computeNear(a, b){
   const patch = { near: { a: na, b: nb, sig: legSig(a, b, []) } };
   const exit = nb.entrances[0];
   if (exit && exit.d > 40){
+    patch.lastMile = { exit, route: null };
     try { const r = await walkRoute([exit, b]); r.sig = legSig(exit, b, []); patch.lastMile = { exit, route: r }; } catch (e){ console.warn(e); }
   } else patch.lastMile = exit ? { exit, route: null } : null;
   await setLeg(a, b, patch);
@@ -867,7 +985,7 @@ async function computePois(a, b, radius){
   const pois = await poisAlong(shapeCoords(g.route), radius);
   await setLeg(a, b, { pois, poisRadius: radius, poisSig: g.route.sig });
 }
-const nearFresh = g => g.L && g.L.near && g.L.near.sig === legSig(g.a, g.b, []);
+const nearFresh = g => !!(g.L && g.L.near && g.L.near.sig === legSig(g.a, g.b, []) && ['a', 'b'].every(k => g.L.near[k] && g.L.near[k].entrances.every(e => num(e.lat) != null)));
 const poisFresh = (g, radius) => g.L && g.L.pois && g.route && g.L.poisSig === g.route.sig && g.L.poisRadius === radius;
 const errText = e => S.online ? 'Service de calcul indisponible (' + (e.message || e) + '). Réessaie dans un moment.' : 'Hors ligne : calcul impossible maintenant.';
 
@@ -943,7 +1061,22 @@ function openLeg(a, b){
       body.push(h('div', { class: 'sec' },
         h('div', { class: 'row' }, h('a', { class: 'btn primary', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Itinéraire et horaires dans Google Maps'),
           n ? h('button', { class: 'btn', type: 'button', onclick: () => showOnMap(close) }, 'Voir sorties sur la carte') : null),
-        h('div', { class: 'muted small' }, 'Lignes, correspondances et horaires : Google Maps (non disponibles dans Tabi pour le Japon). Ci-dessous, les entrées et sorties proches d’après OpenStreetMap ; vérifie la sortie conseillée par Google Maps.')));
+        h('div', { class: 'muted small' }, 'Lignes, correspondances et horaires : Google Maps. Ci-dessous, les entrées et sorties proches d’après OpenStreetMap ; vérifie la sortie conseillée par Google Maps.')));
+      { const pk = (g.L && g.L.pick) || {};
+        const f = h('form', { class: 'sec', onsubmit: async e => { e.preventDefault(); const fd = new FormData(f); document.activeElement && document.activeElement.blur();
+          const pick = { min: +fd.get('min') || null, lines: String(fd.get('lines') || '').trim() || null, dep: fd.get('dep') || null, exit: String(fd.get('exit') || '').trim() || null };
+          await setLeg(a, b, { pick: pick.min || pick.lines ? pick : null }, pick.min || pick.lines ? 'Itinéraire retenu enregistré' : 'Itinéraire retenu effacé'); } },
+          h('div', { class: 'eyebrow' }, 'Itinéraire retenu'),
+          h('div', { class: 'muted small' }, 'Choisis ton itinéraire dans Google Maps, puis note-le ici : il s’affichera dans la journée et restera disponible hors ligne.'),
+          h('div', { class: 'grid2' },
+            h('label', { class: 'f' }, 'Durée (min)', h('input', { type: 'number', name: 'min', id: 'pk-min', min: '1', max: '600', inputmode: 'numeric', value: pk.min || '' })),
+            h('label', { class: 'f' }, 'Départ', h('input', { type: 'time', name: 'dep', id: 'pk-dep', value: pk.dep || '' }))),
+          h('label', { class: 'f' }, 'Lignes et correspondances', h('input', { type: 'text', name: 'lines', id: 'pk-lines', placeholder: 'Ex. Marunouchi → Ginza', value: pk.lines || '' })),
+          h('label', { class: 'f' }, 'Sortie à prendre à l’arrivée', h('input', { type: 'text', name: 'exit', id: 'pk-exit', placeholder: 'Ex. A1', value: pk.exit || '' })),
+          h('div', null, h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')));
+        body.push(f);
+        if (pk.exit) body.push(h('div', { class: 'sec' }, h('div', { class: 'banner' }, h('b', null, 'Sortie retenue : ' + pk.exit), pk.dep ? ' · départ ' + pk.dep : '')));
+      }
       if (n){
         const lm = g.L.lastMile;
         body.push(h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'À l’arrivée · ' + b.name),
@@ -1153,7 +1286,7 @@ function openPlace(id){
           h('button', { class: 'btn' + (p.status === 'visited' ? '' : ' primary'), type: 'button', onclick: () => toggleVisit(p) }, p.status === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité'),
           p.status !== 'visited' ? h('button', { class: 'btn', type: 'button', onclick: () => save({ id, status: p.status === 'skipped' ? 'planned' : 'skipped' }) }, p.status === 'skipped' ? 'Remettre au programme' : 'Pas fait') : null,
           h('a', { class: 'btn', href: placeUrl(p), target: '_blank', rel: 'noopener' }, 'Google Maps'),
-          num(p.lat) != null && M.map ? h('button', { class: 'btn', type: 'button', onclick: () => { close(); if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); } M.map.flyTo({ center: [p.lng, p.lat], zoom: 16 }); M.el.scrollIntoView({ block: 'center' }); } }, 'Voir sur la carte') : null)),
+          num(p.lat) != null && M.eng ? h('button', { class: 'btn', type: 'button', onclick: () => { close(); if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); } M.eng && M.eng.fly(p, 16); M.el.scrollIntoView({ block: 'center' }); } }, 'Voir sur la carte') : null)),
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Photos'),
         photos.length ? thumbs(photos) : h('span', { class: 'muted' }, 'Pas encore de photo.'),
         uploadButton('Ajouter des photos', 'image/*', { role: 'photo', placeId: id, day: p.day || null }, true)),

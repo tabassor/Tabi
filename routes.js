@@ -78,7 +78,7 @@ const altName = t => { const n = nameOf(t); return t.name && t.name !== n ? t.na
 // Entrées/sorties de métro et de gare, stations, arrêts de bus autour d'un point.
 export async function transitNear(p){
   const a = `${p.lat},${p.lng}`;
-  const q = `[out:json][timeout:25];(node["railway"~"^(subway_entrance|train_station_entrance)$"](around:450,${a});node["railway"="station"](around:900,${a});node["highway"="bus_stop"](around:300,${a}););out tags;`;
+  const q = `[out:json][timeout:25];(node["railway"~"^(subway_entrance|train_station_entrance)$"](around:450,${a});node["railway"="station"](around:900,${a});node["highway"="bus_stop"](around:300,${a}););out body;`;
   const j = await overpass(q);
   const ent = [], st = [], bus = []; const seenSt = new Set();
   for (const el of j.elements || []){
