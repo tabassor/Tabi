@@ -384,7 +384,7 @@ function updateMap(){
   for (const p of ideas) add(markerEl('i', '?', () => openPlace(p.id), 'Idée : ' + p.name), p);
   pts.forEach(p => {
     const i = ps.indexOf(p);
-    add(p.anchor ? markerEl('h', 'H', () => openBooking(p.bookingId), p.name)
+    add(p.anchor ? (() => { const el = markerEl('h', 'H', () => openBooking(p.bookingId), p.name); const c = dayColor(dayIdx(day)); el.style.background = c; el.style.borderColor = c; el.style.color = '#fff'; return el; })()
       : markerEl((p.status === 'visited' ? 'v' : '') + (p.status === 'skipped' ? ' s' : ''), String(i + 1), () => openPlace(p.id), (i + 1) + '. ' + p.name), p);
   });
   // tracés de la journée : tracé à pied réel quand il est calculé, sinon ligne droite pointillée
@@ -607,30 +607,40 @@ function updateOverview(){
   M.markers.forEach(m => m.remove()); M.markers = [];
   const empty = { type: 'FeatureCollection', features: [] };
   for (const id of ['route', 'focus']){ const s = M.map.getSource(id); if (s) s.setData(empty); }
-  const ds = tripDays(); const feats = []; const fit = []; const seenHotel = new Set();
+  const ds = tripDays(); const feats = []; const fit = []; const pins = [];
   ds.forEach((d, i) => {
-    const { seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
+    const { A, ps, seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
     for (let j = 1; j < pts.length; j++){
       const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
       feats.push({ type: 'Feature', properties: { color: col }, geometry: { type: 'LineString', coordinates: g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]] } });
     }
-    pts.forEach(p => {
+    // lieux du jour : petits points à la couleur du jour
+    const placed = ps.filter(hasPos);
+    placed.forEach(p => {
       fit.push([p.lng, p.lat]);
-      if (p.anchor){
-        if (seenHotel.has(p.bookingId)) return; seenHotel.add(p.bookingId);
-        M.markers.push(new maplibregl.Marker({ element: markerEl('h', 'H', () => openBooking(p.bookingId), p.name) }).setLngLat([p.lng, p.lat]).addTo(M.map));
-        return;
-      }
-      const el = markerEl('dayk' + (p.status === 'visited' ? ' v' : ''), String(i + 1), () => goDay(d), 'J' + (i + 1) + ' · ' + p.name);
-      el.style.borderColor = col; el.style.color = p.status === 'visited' ? '#fff' : col; if (p.status === 'visited') el.style.background = col;
+      const el = h('button', { class: 'dot' + (p.status === 'visited' ? ' v' : ''), type: 'button', title: 'J' + (i + 1) + ' · ' + p.name, 'aria-label': 'J' + (i + 1) + ' · ' + p.name, onclick: e => { e.stopPropagation(); goDay(d); } });
+      el.style.setProperty('--c', col);
       M.markers.push(new maplibregl.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(M.map));
     });
+    // repère du jour : son numéro, au centre de ses lieux (ou à l'hôtel de la nuit si journée libre)
+    let at = null;
+    if (placed.length) at = { lat: placed.reduce((s, p) => s + p.lat, 0) / placed.length, lng: placed.reduce((s, p) => s + p.lng, 0) / placed.length };
+    else { const h0 = [A.end, A.start].find(hasPos); if (h0) at = { lat: h0.lat, lng: h0.lng }; }
+    if (at){ fit.push([at.lng, at.lat]); pins.push({ d, i, col, at }); }
+  });
+  // repères des jours qui tombent au même endroit : décalés côte à côte
+  const groups = new Map();
+  pins.forEach(pn => { const k = pn.at.lat.toFixed(3) + ',' + pn.at.lng.toFixed(3); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(pn); });
+  for (const g of groups.values()) g.forEach((pn, k) => {
+    const el = markerEl('daypin', String(pn.i + 1), () => goDay(pn.d), 'Jour ' + (pn.i + 1) + ' · ' + fmtDay(pn.d));
+    el.style.background = pn.col; el.style.borderColor = '#fff';
+    M.markers.push(new maplibregl.Marker({ element: el, offset: [(k - (g.length - 1) / 2) * 30, 0] }).setLngLat([pn.at.lng, pn.at.lat]).addTo(M.map));
   });
   const o = M.map.getSource('over'); if (o) o.setData({ type: 'FeatureCollection', features: feats });
   const sig = 'itin|' + fit.length;
   if (sig !== M.sig){
     if (fit.length === 1) M.map.jumpTo({ center: fit[0], zoom: 13 });
-    else if (fit.length > 1){ const b = new maplibregl.LngLatBounds(); fit.forEach(c => b.extend(c)); M.map.fitBounds(b, { padding: 40, maxZoom: 15, duration: 0 }); }
+    else if (fit.length > 1){ const b = new maplibregl.LngLatBounds(); fit.forEach(c => b.extend(c)); M.map.fitBounds(b, { padding: 50, maxZoom: 15, duration: 0 }); }
     M.sig = sig;
   }
   requestAnimationFrame(() => M.map && M.map.resize());
@@ -645,41 +655,44 @@ function daySeq(day){
   if (A.end && !(A.start && A.end.bookingId === A.start.bookingId && !ps.length)) seq.push(A.end);
   return { A, ps, seq };
 }
+const dayIdx = day => tripDays().indexOf(day);
 function viewDay(){
   const day = currentDay(); if (!day) return [h('div', { class: 'empty' }, 'Ajoute les dates du voyage pour voir les journées.')];
   const { A, ps, seq } = daySeq(day);
   const bks = bookingsOf(day).filter(b => b.kind !== 'hotel');
   const done = ps.filter(p => p.status === 'visited').length;
-  const idx = tripDays().indexOf(day);
+  const idx = dayIdx(day); const col = dayColor(idx);
   const prevOf = p => { const i = seq.indexOf(p); return i > 0 ? seq[i - 1] : null; };
   const rows = [];
-  if (A.start) rows.push(anchorRow(A.start, 'Départ', null));
-  else if (!A.end) rows.push(anchorRow(null, 'Départ', null, true));
-  ps.forEach((p, i) => { const f = prevOf(p); if (f) rows.push(legRow(f, p)); rows.push(stopRow(p, i, f)); });
+  if (A.start) rows.push(anchorRow(A.start, 'Départ', null, false, col));
+  else if (!A.end) rows.push(anchorRow(null, 'Départ', null, true, col));
+  ps.forEach((p, i) => { const f = prevOf(p); rows.push(f ? legRow(f, p) : legStart(p)); rows.push(stopRow(p, i, f)); });
   if (!ps.length) rows.push(h('div', { class: 'empty' }, h('h3', null, 'Rien de prévu ce jour-là'), h('span', null, 'Ajoute un lieu, pioche dans les idées ou demande à Claude.')));
   const endA = seq[seq.length - 1];
-  if (A.end && endA === A.end && seq.length > 1){ const f = seq[seq.length - 2]; rows.push(legRow(f, A.end)); rows.push(anchorRow(A.end, A.start && A.end.bookingId === A.start.bookingId ? 'Retour' : 'Nuit', f)); }
-  else if (A.end && !ps.length && !A.start) rows.push(anchorRow(A.end, 'Nuit', null));
+  if (A.end && endA === A.end && seq.length > 1){ const f = seq[seq.length - 2]; rows.push(legRow(f, A.end)); rows.push(anchorRow(A.end, A.start && A.end.bookingId === A.start.bookingId ? 'Retour' : 'Nuit', f, false, col)); }
+  else if (A.end && !ps.length && !A.start) rows.push(anchorRow(A.end, 'Nuit', null, false, col));
+  const list = h('div', { class: 'stops', 'data-day': day }, rows);
   return [
     h('div', { class: 'split' },
       h('div', { class: 'map-col' }, mapPanel()),
       h('div', null,
         h('div', { class: 'spread' },
-          h('div', null, h('div', { class: 'eyebrow' }, 'Jour ' + (idx + 1) + ' sur ' + tripDays().length), h('h2', null, fmtDay(day, { weekday: 'long', day: 'numeric', month: 'long' }))),
+          h('div', null, h('div', { class: 'eyebrow', style: 'color:' + col }, 'Jour ' + (idx + 1) + ' sur ' + tripDays().length), h('h2', null, fmtDay(day, { weekday: 'long', day: 'numeric', month: 'long' }))),
           h('div', { class: 'chip solid' }, done + ' / ' + ps.length + ' tamponnés')),
         bks.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Réservations du jour')), ...bks.map(bookingRow)) : null,
-        h('div', { class: 'panel' }, h('div', { class: 'stops' }, rows)),
+        h('div', { class: 'panel' }, list),
         h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => openPlaceForm({ day }) }, 'Ajouter un lieu'),
           h('button', { class: 'btn', type: 'button', onclick: () => openDayNote(day) }, 'Note ou photos du jour'),
           seq.length > 1 ? h('button', { class: 'btn', type: 'button', onclick: () => prepareDayLegs(day) }, 'Préparer les trajets') : null),
-        seq.length > 1 ? h('div', { class: 'muted small' }, 'Touche un trajet entre deux étapes pour choisir à pied, transports ou taxi, et le mode promenade. « Préparer les trajets » calcule toute la journée à l’avance pour l’avoir hors ligne.') : null))
+        ps.length > 1 ? h('div', { class: 'muted small' }, 'Pour changer l’ordre, fais glisser un lieu par sa poignée ⋮⋮ : les trajets se recalculent. Touche un trajet pour choisir à pied, transports ou taxi, ou le mode promenade.') : null))
   ];
 }
-function anchorRow(a, label, from, hint){
-  if (!a) return hint ? h('div', { class: 'stop', style: 'grid-template-columns:44px 1fr' }, h('div', { class: 'stamp hotel' }, 'H'),
+function anchorRow(a, label, from, hint, col){
+  const stamp = h('div', { class: 'stamp hotel', style: col ? `border-color:${col};color:${col}` : '' }, 'H');
+  if (!a) return hint ? h('div', { class: 'stop', style: 'grid-template-columns:22px 44px 1fr' }, h('span'), stamp,
     h('div', { class: 'muted', style: 'font-size:13.5px' }, 'Ajoute la réservation d’hôtel avec sa date de départ : il deviendra le point de départ et d’arrivée de chaque journée.')) : null;
   const sub = label === 'Départ' ? (a.checkOut ? 'Check-out ' + a.checkOut : '') : (label === 'Nuit' && a.checkIn ? 'Check-in ' + a.checkIn : '');
-  return h('div', { class: 'stop' }, h('div', { class: 'stamp hotel' }, 'H'),
+  return h('div', { class: 'stop' }, h('span'), stamp,
     h('div', { class: 'body', role: 'button', tabindex: '0', onclick: () => openBooking(a.bookingId), onkeydown: e => { if (e.key === 'Enter') openBooking(a.bookingId); } },
       h('div', { class: 'eyebrow' }, label), h('div', { class: 'name' }, a.name),
       h('div', { class: 'meta' }, sub ? h('span', { class: 'mono muted small' }, sub) : null,
@@ -692,7 +705,8 @@ function stopRow(p, i, from){
   const st = p.status;
   const np = mediaOf('placeId', p.id, 'photo').length, nn = notesOf('placeId', p.id).length;
   const linked = bookings().filter(b => b.placeId === p.id);
-  return h('div', { class: 'stop' + (st === 'skipped' ? ' skipped' : '') },
+  return h('div', { class: 'stop' + (st === 'skipped' ? ' skipped' : ''), 'data-id': p.id },
+    h('span', { class: 'grip', title: 'Glisser pour réordonner', 'aria-label': 'Déplacer ' + p.name, role: 'button', tabindex: '0', onpointerdown: e => startDrag(e, p.id), onkeydown: e => keyMove(e, p) }, '⋮⋮'),
     h('button', { class: 'stamp' + (st === 'visited' ? ' done' : '') + (st === 'skipped' ? ' skip' : ''), type: 'button', 'aria-label': st === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité', onclick: () => toggleVisit(p) },
       st === 'visited' ? h('span', null, 'VU', h('br'), p.visitedAt ? fmtTime(p.visitedAt) : '') : String(i + 1)),
     h('div', { class: 'body', onclick: () => openPlace(p.id), role: 'button', tabindex: '0', onkeydown: e => { if (e.key === 'Enter') openPlace(p.id); } },
@@ -710,6 +724,68 @@ function stopRow(p, i, from){
 async function toggleVisit(p){
   const v = p.status === 'visited';
   await save({ id: p.id, status: v ? 'planned' : 'visited', visitedAt: v ? null : new Date().toISOString(), visitedBy: v ? null : meName() }, v ? 'Tampon retiré' : 'Tamponné · ' + p.name);
+}
+
+/* ---- Réordonner les lieux d'une journée (glisser-déposer) ---- */
+let drag = null;
+function startDrag(e, id){
+  if (e.button > 0) return;
+  const row = e.currentTarget.closest('.stop'); const list = row && row.closest('.stops'); if (!list) return;
+  e.preventDefault();
+  const rows = [...list.querySelectorAll('.stop[data-id]')];
+  drag = { id, row, list, rows, startY: e.clientY, pointer: e.pointerId, handle: e.currentTarget, rects: rows.map(r => r.getBoundingClientRect()), target: rows.indexOf(row), from: rows.indexOf(row), scrollY0: window.scrollY };
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+  row.classList.add('dragging');
+  e.currentTarget.addEventListener('pointermove', onDragMove);
+  e.currentTarget.addEventListener('pointerup', onDragEnd);
+  e.currentTarget.addEventListener('pointercancel', onDragEnd);
+}
+function onDragMove(e){
+  if (!drag) return;
+  const vh = window.innerHeight;
+  if (e.clientY > vh - 70) window.scrollBy(0, 12); else if (e.clientY < 140) window.scrollBy(0, -12);
+  const dy = e.clientY - drag.startY + (window.scrollY - drag.scrollY0);
+  drag.row.style.transform = `translateY(${dy}px)`;
+  const r0 = drag.rects[drag.from]; const center = r0.top + r0.height / 2 + dy;
+  let t = 0; drag.rects.forEach((r, k) => { if (k !== drag.from && r.top + r.height / 2 < center) t++; });
+  drag.target = t;
+  drag.rows.forEach((r, k) => r.classList.toggle('drop-before', k !== drag.from && ((t <= drag.from && k === t) || (t > drag.from && k === t + 1))));
+  drag.list.classList.toggle('drop-end', t > drag.from && t === drag.rows.length - 1);
+}
+async function onDragEnd(){
+  if (!drag) return;
+  const d = drag; drag = null;
+  d.handle.removeEventListener('pointermove', onDragMove); d.handle.removeEventListener('pointerup', onDragEnd); d.handle.removeEventListener('pointercancel', onDragEnd);
+  d.row.classList.remove('dragging'); d.row.style.transform = ''; d.rows.forEach(r => r.classList.remove('drop-before')); d.list.classList.remove('drop-end');
+  if (d.target === d.from) return;
+  const ids = d.rows.map(r => r.dataset.id); const [m] = ids.splice(d.from, 1); ids.splice(d.target, 0, m);
+  await reorderDay(d.list.dataset.day, ids);
+}
+async function keyMove(e, p){
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  const ids = placesOf(p.day).map(x => x.id); const i = ids.indexOf(p.id); const j = i + (e.key === 'ArrowUp' ? -1 : 1);
+  if (j < 0 || j >= ids.length) return;
+  ids.splice(i, 1); ids.splice(j, 0, p.id);
+  await reorderDay(p.day, ids);
+}
+async function reorderDay(day, ids){
+  for (let k = 0; k < ids.length; k++){ const p = S.items.get(ids[k]); if (p && p.order !== k + 1) await save({ id: p.id, order: k + 1 }); }
+  toast('Ordre mis à jour');
+  M.sig = ''; refreshDayLegs(day);
+}
+// Recalcule en arrière-plan les trajets à pied devenus inconnus (après un ajout ou un changement d'ordre).
+let refreshing = false;
+async function refreshDayLegs(day){
+  if (refreshing || !S.online || !day) return; refreshing = true;
+  try {
+    const { seq } = daySeq(day);
+    for (let i = 1; i < seq.length; i++){
+      const a = seq[i - 1], b = seq[i]; if (!hasPos(a) || !hasPos(b)) continue;
+      const g = legInfo(a, b);
+      if (!g.route && g.straight < 5000){ try { await computeWalk(a, b); } catch (e){ console.warn('Tabi trajet', e); break; } await new Promise(r => setTimeout(r, 1100)); }
+    }
+  } finally { refreshing = false; }
 }
 
 /* ---- Trajets entre deux étapes ---- */
@@ -745,12 +821,23 @@ function legUrlFor(a, b){
   if (g.eff === 'walk' && g.via.length) u += '&waypoints=' + encodeURIComponent(g.via.slice(0, 3).map(v => v.lat + ',' + v.lng).join('|'));
   return u;
 }
+const LEG_ICON = { walk: 'M13 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM10 8l-2 5 2 1 1-3 2 2v5M10 8l3 1 2 3M9 21l2-6', transit: 'M7 4h10a2 2 0 012 2v9a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2zM5 11h14M8 20l2-3M16 20l-2-3', taxi: 'M5 15l1.5-5h11L19 15M4 15h16v3H4zM7 18v2M17 18v2', none: 'M12 6v12' };
+function legIcon(mode){
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', LEG_ICON[mode] || LEG_ICON.none); svg.append(p);
+  return svg;
+}
 function legRow(a, b){
   const g = legInfo(a, b);
   return h('button', { class: 'leg-btn', type: 'button', onclick: () => g.ok ? openLeg(a, b) : toast('Place les deux étapes sur la carte pour calculer le trajet.') },
-    h('span', { class: 'leg-mode m-' + (g.ok ? g.eff : 'none') }, g.ok ? ({ walk: '徒', transit: '電', taxi: '車' })[g.eff] : '?'),
-    h('span', { class: 'leg-txt' }, legLabel(g), g.chosen === 'auto' && g.ok ? h('span', { class: 'muted' }, ' · choix auto') : null),
+    h('span'), h('span', { class: 'leg-line m-' + (g.ok ? g.eff : 'none') }, legIcon(g.ok ? g.eff : 'none')),
+    h('span', { class: 'leg-txt' }, legLabel(g), g.chosen === 'auto' && g.ok ? h('span', { class: 'muted' }, ' · auto') : null),
     h('span', { class: 'leg-go', 'aria-hidden': 'true' }, '›'));
+}
+function legStart(p){
+  return h('div', { class: 'leg-btn', style: 'cursor:default' }, h('span'), h('span', { class: 'leg-line m-none' }, legIcon('none')),
+    h('span', { class: 'leg-txt muted' }, 'Premier lieu du jour · ajoute l’hôtel de la veille pour calculer le trajet d’accès'), h('span'));
 }
 function legFromId(id, day){
   const { seq } = daySeq(day);
@@ -944,48 +1031,33 @@ async function prepareDayLegs(day){
 }
 
 /* ---- Lieu : création / modification ---- */
+// Type de lieu déduit de la catégorie OpenStreetMap renvoyée par la recherche.
+function kindFromOsm(r){
+  const c = r.category || r.class || '', t = r.type || '';
+  if (c === 'tourism' && /hotel|hostel|guest_house|motel|apartment/.test(t)) return 'hotel';
+  if (c === 'amenity' && /restaurant|cafe|fast_food|bar|pub|food_court|ice_cream/.test(t)) return 'resto';
+  if (c === 'railway' || c === 'public_transport' || (c === 'amenity' && /bus_station|ferry_terminal/.test(t)) || c === 'aeroway') return 'transport';
+  if (c === 'leisure' && /water_park|amusement|stadium|sports/.test(t)) return 'activite';
+  if (c === 'tourism' && /theme_park|zoo|aquarium/.test(t)) return 'activite';
+  return 'visite';
+}
 function openPlaceForm(init){
-  const st = { results: null, searching: false, coords: num(init.lat) != null ? { lat: init.lat, lng: init.lng, coordSource: init.coordSource || 'carte' } : null };
-  openSheet(close => {
-    const f = h('form', { class: 'form', onsubmit: async e => {
-      e.preventDefault(); const fd = new FormData(f);
-      const name = String(fd.get('name') || '').trim(); if (!name) return;
-      const link = String(fd.get('link') || '').trim(); const c = parseCoords(link);
-      const day = fd.get('day') || null;
-      const coords = c ? { lat: c.lat, lng: c.lng, coordSource: /^https?:/.test(link) ? 'lien' : 'saisie' } : st.coords;
-      document.activeElement && document.activeElement.blur();
-      await save({ id: uid(), type: 'place', name, kind: fd.get('kind') || 'visite', day, time: fd.get('time') || null,
-        city: String(fd.get('city') || '').trim() || (st.picked && st.picked.city) || null, address: (st.picked && st.picked.address) || null,
-        lat: coords ? coords.lat : null, lng: coords ? coords.lng : null, coordSource: coords ? coords.coordSource : null,
-        mapsUrl: /^https?:\/\//.test(link) ? link : null, order: nextOrder(day), status: 'planned', addedDuring: duringTrip(day),
-        note: String(fd.get('note') || '').trim() || null, createdBy: meName(), createdAt: new Date().toISOString() }, 'Ajouté · ' + name);
-      close();
-    } },
-      h('label', { class: 'f' }, 'Nom du lieu', h('div', { class: 'row', style: 'flex-wrap:nowrap' },
-        h('input', { type: 'text', name: 'name', id: 'pf-name', required: true, placeholder: 'Ex. Fushimi Inari Taisha', autocomplete: 'off', value: init.name || '' }),
-        h('button', { class: 'btn', type: 'button', disabled: !S.online ? true : null, onclick: () => search(f.querySelector('#pf-name').value) }, 'Chercher'))),
-      st.searching ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), 'Recherche OpenStreetMap…') : null,
-      st.results ? (st.results.length ? h('div', { class: 'results' }, st.results.map(r => h('button', { type: 'button', onclick: () => {
-          st.coords = { lat: +(+r.lat).toFixed(6), lng: +(+r.lon).toFixed(6), coordSource: 'osm' };
-          st.picked = { address: r.display_name, city: (r.address && (r.address.city || r.address.town || r.address.village || r.address.suburb)) || null };
-          const n = f.querySelector('#pf-name'); if (n && !n.value.trim()) n.value = r.name || r.display_name.split(',')[0];
-          st.results = null; S.sheet.render(); } }, h('strong', null, r.name || r.display_name.split(',')[0]), h('div', { class: 'muted small' }, r.display_name))))
-        : h('div', { class: 'muted small' }, 'Aucun résultat. Essaie le nom en anglais ou en japonais, colle un lien Google Maps, ou place-le sur la carte.')) : null,
-      h('div', { class: 'muted small' }, st.coords ? `Position : ${st.coords.lat.toFixed(5)}, ${st.coords.lng.toFixed(5)}` + (st.picked ? ' · ' + st.picked.address.slice(0, 80) : '') : 'Pas encore de position.'),
-      h('div', { class: 'grid2' },
-        h('label', { class: 'f' }, 'Type', h('select', { name: 'kind', id: 'pf-kind' }, Object.entries(KINDS).map(([v, l]) => h('option', { value: v, selected: v === (init.kind || 'visite') ? true : null }, l)))),
-        h('label', { class: 'f' }, 'Quand', h('select', { name: 'day', id: 'pf-day' }, h('option', { value: '' }, 'Idée (sans date)'), tripDays().map(d => h('option', { value: d, selected: d === init.day ? true : null }, fmtDay(d)))))),
-      h('div', { class: 'grid2' },
-        h('label', { class: 'f' }, 'Heure (facultatif)', h('input', { type: 'time', name: 'time', id: 'pf-time' })),
-        h('label', { class: 'f' }, 'Ville / quartier', h('input', { type: 'text', name: 'city', id: 'pf-city', placeholder: 'Kyoto' }))),
-      h('label', { class: 'f' }, 'Lien Google Maps ou coordonnées (facultatif)', h('input', { type: 'text', name: 'link', id: 'pf-link', placeholder: 'Lien « Partager » de Google Maps' })),
-      h('label', { class: 'f' }, 'Note (facultatif)', h('input', { type: 'text', name: 'note', id: 'pf-note', placeholder: 'Pourquoi y aller, horaires…' })),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'Ajouter'),
-        h('button', { class: 'btn', type: 'button', onclick: () => { const v = f.querySelector('#pf-name').value; const d = f.querySelector('#pf-day').value; startPlacing('Touche la carte pour placer le lieu', c => openPlaceForm({ ...init, name: v, day: d || null, lat: c.lat, lng: c.lng, coordSource: 'carte' })); } }, 'Placer sur la carte')));
-    return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead('Nouveau lieu', close), f);
-  });
-  async function search(q){
-    q = (q || '').trim(); if (!q) return;
+  // l'état du formulaire est gardé ici : il survit aux rafraîchissements de la fiche
+  const st = { results: null, searching: false, picked: null,
+    v: { name: init.name || '', kind: init.kind || 'visite', day: init.day || '', time: '', city: '', address: '', link: '', note: '' },
+    coords: num(init.lat) != null ? { lat: init.lat, lng: init.lng, coordSource: init.coordSource || 'carte' } : null };
+  const bind = k => ({ id: 'pf-' + k, name: k, value: st.v[k], oninput: e => { st.v[k] = e.target.value; }, onchange: e => { st.v[k] = e.target.value; } });
+  const pick = r => {
+    const a = r.address || {};
+    st.coords = { lat: +(+r.lat).toFixed(6), lng: +(+r.lon).toFixed(6), coordSource: 'osm' };
+    st.v.name = r.name || r.display_name.split(',')[0];
+    st.v.city = a.city || a.town || a.village || a.city_district || a.suburb || a.county || st.v.city;
+    st.v.address = r.display_name;
+    st.v.kind = kindFromOsm(r);
+    st.picked = r; st.results = null; S.sheet.render();
+  };
+  async function search(){
+    const q = st.v.name.trim(); if (!q) return;
     st.searching = true; st.results = null; S.sheet.render();
     try {
       const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&accept-language=fr,en,ja&q=' + encodeURIComponent(q));
@@ -993,6 +1065,48 @@ function openPlaceForm(init){
     } catch { st.results = []; toast('Recherche indisponible (réseau).'); }
     st.searching = false; S.sheet && S.sheet.render();
   }
+  openSheet(close => {
+    const f = h('form', { class: 'form', onsubmit: async e => {
+      e.preventDefault();
+      const v = st.v; const name = v.name.trim();
+      if (!name){ toast('Donne un nom au lieu.'); return; }
+      const c = parseCoords(v.link.trim());
+      const coords = c ? { lat: c.lat, lng: c.lng, coordSource: /^https?:/.test(v.link.trim()) ? 'lien' : 'saisie' } : st.coords;
+      const day = v.day || null;
+      document.activeElement && document.activeElement.blur();
+      await save({ id: uid(), type: 'place', name, kind: v.kind || 'visite', day, time: v.time || null,
+        city: v.city.trim() || null, address: v.address.trim() || null,
+        lat: coords ? coords.lat : null, lng: coords ? coords.lng : null, coordSource: coords ? coords.coordSource : null,
+        mapsUrl: /^https?:\/\//.test(v.link.trim()) ? v.link.trim() : null, order: nextOrder(day), status: 'planned', addedDuring: duringTrip(day),
+        note: v.note.trim() || null, createdBy: meName(), createdAt: new Date().toISOString() },
+        day ? 'Ajouté au ' + fmtDay(day) + ' · ' + name : 'Ajouté aux idées · ' + name);
+      close();
+      if (day){ S.day = day; M.sig = ''; refreshDayLegs(day); }
+    } },
+      h('label', { class: 'f' }, 'Nom ou adresse du lieu', h('div', { class: 'row', style: 'flex-wrap:nowrap' },
+        h('input', { type: 'text', required: true, placeholder: 'Ex. Fushimi Inari Taisha', autocomplete: 'off', ...bind('name'),
+          onkeydown: e => { if (e.key === 'Enter' && !st.coords){ e.preventDefault(); search(); } } }),
+        h('button', { class: 'btn', type: 'button', disabled: !S.online ? true : null, onclick: search }, 'Chercher'))),
+      st.searching ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), 'Recherche OpenStreetMap…') : null,
+      st.results ? (st.results.length ? h('div', { class: 'results' }, st.results.map(r => h('button', { type: 'button', onclick: () => pick(r) },
+          h('strong', null, r.name || r.display_name.split(',')[0]), h('span', { class: 'chip', style: 'margin-left:6px' }, KINDS[kindFromOsm(r)]), h('div', { class: 'muted small' }, r.display_name))))
+        : h('div', { class: 'muted small' }, 'Aucun résultat. Essaie le nom en anglais ou en japonais, colle un lien Google Maps, ou place le lieu sur la carte.')) : null,
+      st.coords ? h('div', { class: 'banner' }, '✓ Position trouvée', st.picked ? ' · ' + st.v.address.slice(0, 110) : ' (' + st.coords.lat.toFixed(5) + ', ' + st.coords.lng.toFixed(5) + ')',
+          h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.coords = null; st.picked = null; S.sheet.render(); } }, 'Effacer'))
+        : h('div', { class: 'muted small' }, 'Cherche le lieu pour remplir automatiquement sa position, sa ville et son type.'),
+      h('div', { class: 'grid2' },
+        h('label', { class: 'f' }, 'Type', h('select', bind('kind'), Object.entries(KINDS).map(([k, l]) => h('option', { value: k, selected: k === st.v.kind ? true : null }, l)))),
+        h('label', { class: 'f' }, 'Quand', h('select', bind('day'), h('option', { value: '', selected: !st.v.day ? true : null }, 'Idée (sans date)'), tripDays().map(d => h('option', { value: d, selected: d === st.v.day ? true : null }, 'J' + (dayIdx(d) + 1) + ' · ' + fmtDay(d)))))),
+      h('div', { class: 'grid2' },
+        h('label', { class: 'f' }, 'Heure (facultatif)', h('input', { type: 'time', ...bind('time') })),
+        h('label', { class: 'f' }, 'Ville / quartier', h('input', { type: 'text', placeholder: 'Kyoto', ...bind('city') }))),
+      st.v.address ? h('label', { class: 'f' }, 'Adresse', h('input', { type: 'text', ...bind('address') })) : null,
+      h('label', { class: 'f' }, 'Lien Google Maps ou coordonnées (facultatif)', h('input', { type: 'text', placeholder: 'Lien « Partager » de Google Maps', ...bind('link') })),
+      h('label', { class: 'f' }, 'Note (facultatif)', h('input', { type: 'text', placeholder: 'Pourquoi y aller, horaires…', ...bind('note') })),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'Ajouter'),
+        h('button', { class: 'btn', type: 'button', onclick: () => { const v = st.v; startPlacing('Touche la carte pour placer le lieu', c => openPlaceForm({ ...init, name: v.name, kind: v.kind, day: v.day || null, lat: c.lat, lng: c.lng, coordSource: 'carte' })); } }, 'Placer sur la carte')));
+    return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead('Nouveau lieu', close), f);
+  });
 }
 
 /* ---- Lieu : fiche ---- */
@@ -1244,7 +1358,7 @@ function viewIdeas(){
   return [
     h('div', { class: 'spread' }, h('div', null, h('div', { class: 'eyebrow' }, ideas.length + ' idée' + (ideas.length > 1 ? 's' : '')), h('h2', null, 'Idées à caser')),
       h('button', { class: 'btn primary', type: 'button', onclick: () => openPlaceForm({ day: null }) }, 'Ajouter une idée')),
-    h('div', { class: 'panel' }, ideas.length ? h('div', { class: 'stops' }, ideas.map(p => h('div', { class: 'stop' },
+    h('div', { class: 'panel' }, ideas.length ? h('div', { class: 'stops' }, ideas.map(p => h('div', { class: 'stop' }, h('span'),
       h('div', { class: 'stamp', style: 'border-style:dotted' }, '＋'),
       h('div', { class: 'body', onclick: () => openPlace(p.id), role: 'button', tabindex: '0' }, h('div', { class: 'name' }, p.name),
         h('div', { class: 'meta' }, kindChip(p.kind), p.city ? h('span', { class: 'muted small' }, p.city) : null, p.note ? h('span', { class: 'muted small' }, p.note) : null)),

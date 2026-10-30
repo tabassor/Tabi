@@ -84,7 +84,7 @@ h3{font-family:var(--f-display);font-size:15px;margin:0}
 
 /* étapes */
 .stops{display:flex;flex-direction:column}
-.stop{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 12px;border-top:1px solid var(--line)}
+.stop{display:grid;grid-template-columns:18px 44px minmax(0,1fr) auto;gap:8px;align-items:center;padding:10px 12px 10px 6px;border-top:1px solid var(--line);background:var(--surface);position:relative}
 .stop:first-child{border-top:0}
 .stop .body{min-width:0;cursor:pointer}
 .stop .name{font-weight:700;font-size:15.5px;overflow-wrap:anywhere}
@@ -151,7 +151,7 @@ nav.tabs button[aria-current="true"]{color:var(--stamp)}
 .welcome h1{font-family:var(--f-display);font-size:30px;margin:0}
 
 /* trajets entre étapes */
-.leg-btn{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;align-items:center;width:100%;text-align:left;border:0;border-top:1px solid var(--line);background:transparent;padding:6px 12px 6px 20px;font-size:13px;color:var(--muted)}
+.leg-btn{display:grid;grid-template-columns:18px 44px minmax(0,1fr) auto;gap:8px;align-items:center;width:100%;text-align:left;border:0;background:transparent;padding:0 12px 0 6px;min-height:30px;font-size:12.5px;color:var(--muted)}
 .leg-btn:hover{background:var(--paper)}
 .leg-mode{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;font:700 12px var(--f-display);color:#fff;background:var(--route)}
 .leg-mode.m-walk{background:var(--ok)} .leg-mode.m-transit{background:#0F7C8F} .leg-mode.m-taxi{background:var(--warn)}
@@ -191,3 +191,22 @@ ol.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:5px;f
 .itin-places li.s{text-decoration:line-through;color:var(--muted)}
 .warn-t{color:var(--warn)}
 .mk.dayk{width:22px;height:22px;font-size:11px;border-width:2px}
+
+/* trajets simplifiés : un trait vertical et une petite icône du mode */
+.leg-line{align-self:stretch;display:grid;place-items:center;position:relative}
+.leg-line::before{content:"";position:absolute;top:0;bottom:0;left:50%;border-left:2px dotted var(--line)}
+.leg-line svg{position:relative;width:18px;height:18px;padding:2px;border-radius:50%;background:var(--surface);fill:none;stroke:var(--muted);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.leg-line.m-walk svg{stroke:var(--ok)} .leg-line.m-transit svg{stroke:#0F7C8F} .leg-line.m-taxi svg{stroke:var(--warn)}
+.leg-btn .leg-txt{color:var(--muted)}
+.stops > .stop + .stop{border-top:1px solid var(--line)}
+.stops > .leg-btn + .stop,.stops > .stop:first-child{border-top:0}
+/* poignée et glisser-déposer */
+.grip{cursor:grab;color:var(--muted);font-size:14px;letter-spacing:-3px;touch-action:none;user-select:none;-webkit-user-select:none;display:grid;place-items:center;height:40px;border-radius:6px}
+.grip:active{cursor:grabbing}
+.stop.dragging{z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.22);border-radius:8px;opacity:.96}
+.stop.drop-before{box-shadow:inset 0 3px 0 var(--stamp)}
+.stops.drop-end > .stop[data-id]:last-of-type{box-shadow:inset 0 -3px 0 var(--stamp)}
+/* carte de l'itinéraire */
+.mk.daypin{width:30px;height:30px;color:#fff;font-size:13px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.dot{width:12px;height:12px;border-radius:50%;border:2px solid var(--c);background:var(--surface);padding:0;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.dot.v{background:var(--c)}
