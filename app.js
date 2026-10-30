@@ -296,6 +296,24 @@ function dayModel(day){
   const ps = placesOf(day).filter(p => !ids.has(p.id));
   return { A, ps };
 }
+// Réservations qui sont des étapes de la journée (rendez-vous, restaurant, activité) : tout sauf hôtel, transport et annulées.
+const inRoute = b => b.kind !== 'hotel' && b.kind !== 'transport' && !b.cancelled;
+// Étapes tirées des réservations du jour qui ne sont pas déjà représentées par leur lieu dans la journée.
+function dayEvents(day, ps){
+  const ids = new Set(ps.map(p => p.id));
+  return bookingsOf(day).filter(b => inRoute(b) && !(b.placeId && ids.has(b.placeId))).map(b => {
+    const p = b.placeId && S.items.get(b.placeId); const pp = p && num(p.lat) != null && num(p.lng) != null;
+    const lat = pp ? p.lat : num(b.lat), lng = pp ? p.lng : num(b.lng);
+    return { ev: true, id: null, bookingId: b.id, name: b.title, kind: b.kind, time: b.time || null, lat, lng,
+      coordSource: pp ? p.coordSource : (lat != null ? 'estime' : null), address: (p && p.address) || b.address || null, city: (p && p.city) || b.city || null,
+      mapsUrl: (p && p.mapsUrl) || null, status: null };
+  });
+}
+// Insère une étape horodatée avant la première étape plus tardive ; sans heure, en fin de journée.
+function insertByTime(list, e){
+  const k = e.time ? list.findIndex(x => x.time && x.time > e.time) : -1;
+  if (k < 0) list.push(e); else list.splice(k, 0, e);
+}
 
 /* ---- liens Google Maps ---- */
 function placeQuery(p){ if (num(p.lat) != null && p.coordSource && p.coordSource !== 'estime') return p.lat + ',' + p.lng; return [p.name, p.address || p.city].filter(Boolean).join(', '); }
@@ -510,6 +528,7 @@ function updateMap(){
   pts.forEach(p => {
     const i = ps.indexOf(p);
     E.marker(p.anchor ? (() => { const el = markerEl('h', 'H', () => openBooking(p.bookingId), p.name); const c = dayColor(dayIdx(day)); el.style.background = c; el.style.borderColor = c; el.style.color = '#fff'; return el; })()
+      : p.ev ? markerEl('e', String(i + 1), () => openBooking(p.bookingId), (i + 1) + '. ' + (p.time ? p.time + ' ' : '') + p.name)
       : markerEl((p.status === 'visited' ? 'v' : '') + (p.status === 'skipped' ? ' s' : ''), String(i + 1), () => openPlace(p.id), (i + 1) + '. ' + p.name), p);
   });
   // tracés de la journée : tracé à pied réel quand il est calculé, sinon ligne droite pointillée
@@ -693,8 +712,8 @@ function viewItin(){
   const allP = places().filter(p => p.day && ds.includes(p.day));
   const cities = [...new Set(hotelStays().map(st => st.b.city).filter(Boolean))];
   const cards = ds.map((d, i) => {
-    const { A, ps } = dayModel(d);
-    const bks = bookingsOf(d).filter(b => b.kind !== 'hotel');
+    const { A, ps, stops } = daySeq(d);
+    const bks = bookingsOf(d).filter(b => b.kind !== 'hotel' && !inRoute(b));
     const done = ps.filter(p => p.status === 'visited').length;
     const night = A.end ? A.end.name : null;
     const moving = A.start && A.end && A.start.bookingId !== A.end.bookingId;
@@ -706,7 +725,7 @@ function viewItin(){
           h('div', null, h('span', { class: 'itin-j mono', style: 'color:' + dayColor(i) }, 'J' + (i + 1)), h('b', null, ' ' + fmtDay(d, { weekday: 'long', day: 'numeric', month: 'long' }))),
           h('div', { class: 'row' }, d === td ? h('span', { class: 'chip solid' }, 'aujourd’hui') : null,
             ps.length ? h('span', { class: 'chip' + (done === ps.length ? ' solid' : '') }, done + '/' + ps.length) : null)),
-        ps.length ? h('ol', { class: 'itin-places' }, ps.map(p => h('li', { class: p.status === 'visited' ? 'v' : p.status === 'skipped' ? 's' : '' },
+        stops.length ? h('ol', { class: 'itin-places' }, stops.map(p => h('li', { class: p.status === 'visited' ? 'v' : p.status === 'skipped' ? 's' : '' },
           p.time ? h('span', { class: 'mono muted' }, p.time + ' ') : null, p.name))) : h('div', { class: 'muted small' }, 'Journée libre, rien de prévu.'),
         bks.length ? h('div', { class: 'small muted' }, bks.map(b => (b.time ? b.time + ' ' : '') + b.title).join(' · ')) : null,
         h('div', { class: 'row small muted' },
@@ -734,7 +753,7 @@ function updateOverview(){
   const E = M.eng; E.clear();
   const ds = tripDays(); const lines = []; const fit = []; const pins = [];
   ds.forEach((d, i) => {
-    const { A, ps, seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
+    const { A, stops: ps, seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
     for (let j = 1; j < pts.length; j++){
       const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
       const nr = g.eff === 'transit' && navChosen(g);
@@ -772,25 +791,27 @@ function updateOverview(){
 /* ---- Journée ---- */
 function daySeq(day){
   const { A, ps } = dayModel(day);
+  const stops = ps.slice();
+  dayEvents(day, ps).forEach(e => insertByTime(stops, e));
   const seq = [];
   if (A.start) seq.push(A.start);
-  ps.forEach(p => seq.push(p));
-  if (A.end && !(A.start && A.end.bookingId === A.start.bookingId && !ps.length)) seq.push(A.end);
-  return { A, ps, seq };
+  stops.forEach(p => seq.push(p));
+  if (A.end && !(A.start && A.end.bookingId === A.start.bookingId && !stops.length)) seq.push(A.end);
+  return { A, ps, stops, seq };
 }
 const dayIdx = day => tripDays().indexOf(day);
 function viewDay(){
   const day = currentDay(); if (!day) return [h('div', { class: 'empty' }, 'Ajoute les dates du voyage pour voir les journées.')];
-  const { A, ps, seq } = daySeq(day);
-  const bks = bookingsOf(day).filter(b => b.kind !== 'hotel');
+  const { A, ps, stops, seq } = daySeq(day);
+  const bks = bookingsOf(day).filter(b => b.kind !== 'hotel' && !inRoute(b));
   const done = ps.filter(p => p.status === 'visited').length;
   const idx = dayIdx(day); const col = dayColor(idx);
   const prevOf = p => { const i = seq.indexOf(p); return i > 0 ? seq[i - 1] : null; };
   const rows = [];
   if (A.start) rows.push(anchorRow(A.start, 'Départ', null, false, col));
   else if (!A.end) rows.push(anchorRow(null, 'Départ', null, true, col));
-  ps.forEach((p, i) => { const f = prevOf(p); rows.push(f ? legRow(f, p) : legStart(p)); rows.push(stopRow(p, i, f)); });
-  if (!ps.length) rows.push(h('div', { class: 'empty' }, h('h3', null, 'Rien de prévu ce jour-là'), h('span', null, 'Ajoute un lieu, pioche dans les idées ou demande à Claude.')));
+  stops.forEach((p, i) => { const f = prevOf(p); rows.push(f ? legRow(f, p) : legStart(p)); rows.push(p.ev ? eventRow(p, i, f) : stopRow(p, i, f)); });
+  if (!stops.length) rows.push(h('div', { class: 'empty' }, h('h3', null, 'Rien de prévu ce jour-là'), h('span', null, 'Ajoute un lieu, pioche dans les idées ou demande à Claude.')));
   const endA = seq[seq.length - 1];
   if (A.end && endA === A.end && seq.length > 1){ const f = seq[seq.length - 2]; rows.push(legRow(f, A.end)); rows.push(anchorRow(A.end, A.start && A.end.bookingId === A.start.bookingId ? 'Retour' : 'Nuit', f, false, col)); }
   else if (A.end && !ps.length && !A.start) rows.push(anchorRow(A.end, 'Nuit', null, false, col));
@@ -802,7 +823,7 @@ function viewDay(){
         h('div', { class: 'spread' },
           h('div', null, h('div', { class: 'eyebrow', style: 'color:' + col }, 'Jour ' + (idx + 1) + ' sur ' + tripDays().length), h('h2', null, fmtDay(day, { weekday: 'long', day: 'numeric', month: 'long' }))),
           h('div', { class: 'chip solid' }, done + ' / ' + ps.length + ' tamponnés')),
-        bks.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Réservations du jour')), ...bks.map(bookingRow)) : null,
+        bks.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Transports et autres réservations du jour')), ...bks.map(bookingRow)) : null,
         h('div', { class: 'panel' }, list),
         h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => openPlaceForm({ day }) }, 'Ajouter un lieu'),
           h('button', { class: 'btn', type: 'button', onclick: () => openDayNote(day) }, 'Note ou photos du jour'),
@@ -844,6 +865,18 @@ function stopRow(p, i, from){
         p._pending ? h('span', { class: 'muted small' }, '· non synchronisé') : null)),
     from && hasPos(from) && hasPos(p) ? h('a', { class: 'btn ghost', href: legUrlFor(from, p), target: '_blank', rel: 'noopener', 'aria-label': 'Google Maps vers ' + p.name }, 'Y aller')
       : h('a', { class: 'btn ghost', href: placeUrl(p), target: '_blank', rel: 'noopener' }, 'Maps'));
+}
+// Étape issue d'une réservation (rendez-vous, restaurant…) sans lieu dans la journée : placée à son heure dans le parcours.
+function eventRow(e, i, from){
+  const open = () => openBooking(e.bookingId);
+  return h('div', { class: 'stop ev' }, h('span'),
+    h('button', { class: 'stamp ev', type: 'button', title: 'Réservation', 'aria-label': 'Ouvrir la réservation ' + e.name, onclick: open }, String(i + 1)),
+    h('div', { class: 'body', onclick: open, role: 'button', tabindex: '0', onkeydown: k => { if (k.key === 'Enter') open(); } },
+      h('div', { class: 'name' }, e.time ? h('span', { class: 'mono muted', style: 'font-weight:600;margin-right:6px' }, e.time) : null, e.name),
+      h('div', { class: 'meta' }, kindChip(e.kind), h('span', { class: 'chip solid' }, 'Réservé'),
+        num(e.lat) == null ? h('span', { class: 'chip', title: 'Ajoute une adresse ou crée le lieu depuis la réservation' }, 'Sans position') : (e.coordSource === 'estime' ? h('span', { class: 'chip', title: 'Position estimée' }, '≈ position') : null))),
+    from && hasPos(from) && hasPos(e) ? h('a', { class: 'btn ghost', href: legUrlFor(from, e), target: '_blank', rel: 'noopener', 'aria-label': 'Google Maps vers ' + e.name }, 'Y aller')
+      : (hasPos(e) || e.address ? h('a', { class: 'btn ghost', href: placeUrl(e), target: '_blank', rel: 'noopener' }, 'Maps') : h('span')));
 }
 async function toggleVisit(p){
   const v = p.status === 'visited';
@@ -914,7 +947,7 @@ async function refreshDayLegs(day){
 
 /* ---- Trajets entre deux étapes ---- */
 const hasPos = p => !!p && num(p.lat) != null && num(p.lng) != null;
-const pkey = p => p.anchor ? 'h' + p.bookingId : p.id;
+const pkey = p => p.anchor ? 'h' + p.bookingId : p.ev ? 'b' + p.bookingId : p.id;
 const legId = (a, b) => 'leg_' + pkey(a) + '_' + pkey(b);
 const legSig = (a, b, via) => [a, ...(via || []), b].map(p => p.lat.toFixed(5) + ',' + p.lng.toFixed(5)).join(';');
 const walkMax = () => (trip() && trip().walkMax) || 20;
