@@ -3,7 +3,7 @@
 import { CONFIG } from './config.js';
 import { drive, signIn, hasToken, clearToken } from './drive.js';
 import { idb } from './store.js';
-import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes } from './routes.js';
+import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate } from './routes.js';
 
 /* ================= utilitaires ================= */
 const $ = s => document.querySelector(s);
@@ -1100,33 +1100,52 @@ async function navSearch(a, b, st){
   try {
     const routes = await navitimeRoutes(navKey(), a, b, day + 'T' + st.navTime + ':00');
     await bumpNav();
-    await setLeg(a, b, { nav: { routes, chosen: null, time: st.navTime, day, at: new Date().toISOString(), sig: legSig(a, b, []) } });
+    let tr = null; try { tr = await navTranslate(a, b, routes); } catch {}
+    await setLeg(a, b, { nav: { routes, tr, chosen: null, time: st.navTime, day, at: new Date().toISOString(), sig: legSig(a, b, []) } });
     if (!routes.length) st.err = 'NAVITIME n’a trouvé aucun itinéraire pour ce trajet.';
   } catch (e){ console.warn('Tabi NAVITIME', e); st.err = e.message || String(e); if (e.status) await bumpNav().catch(() => {}); }
   st.navBusy = false; S.sheet && S.sheet.render();
+}
+const trOf = (N, s) => { if (!s) return s; const v = N && N.tr && N.tr[String(s).normalize('NFKC').trim()]; return v || s; };
+const jaHint = (N, s) => { const t = trOf(N, s); return t !== s ? h('span', { class: 'muted small' }, ' ' + s) : null; };
+async function navTranslate(a, b, routes){
+  const st = [], ln = [];
+  for (const r of routes) for (const x of r.secs){ if (x.t === 'p' && x.name !== 'start' && x.name !== 'goal') st.push(x.name); if (x.t === 'm'){ if (x.line) ln.push(x.line); if (x.dest) st.push(x.dest); } }
+  return translateNames(st, ln, a);
+}
+async function ensureNavTranslated(a, b){
+  const g = legInfo(a, b); const N = g.L && g.L.nav;
+  if (!N || N.tr || !navigator.onLine || ensureNavTranslated.busy) return;
+  ensureNavTranslated.busy = true;
+  try {
+    const tr = await navTranslate(a, b, N.routes); await setLeg(a, b, { nav: { ...N, tr } });
+    if (N.chosen != null && g.L.pick && g.L.pick.src === 'navitime') await navChoose(a, b, N.chosen);
+  } catch (e){ console.warn(e); }
+  ensureNavTranslated.busy = false;
 }
 async function navChoose(a, b, i){
   const g = legInfo(a, b); const N = g.L.nav; const r = N.routes[i];
   const trains = r.secs.filter(x => x.t === 'm' && x.move !== 'walk');
   const exit = [...r.secs].reverse().find(x => x.t === 'p' && x.gate);
-  await setLeg(a, b, { nav: { ...N, chosen: i }, pick: { min: r.min, lines: trains.map(x => x.line).filter(Boolean).join(' → ') || null, dep: r.dep || null, exit: exit ? exit.gate : null, src: 'navitime' } }, 'Itinéraire retenu');
+  await setLeg(a, b, { nav: { ...N, chosen: i }, pick: { min: r.min, lines: trains.map(x => trOf(N, x.line)).filter(Boolean).join(' → ') || null, dep: r.dep || null, exit: exit ? translateGate(exit.gate) : null, src: 'navitime' } }, 'Itinéraire retenu');
 }
-function navLineChips(r){
-  return r.secs.filter(x => x.t === 'm' && x.move !== 'walk').map(x => h('span', { class: 'line-chip', style: 'background:' + (x.color || '#0F7C8F') }, x.line || MOVE_FR[x.move] || x.move));
+function navLineChips(r, N){
+  return r.secs.filter(x => x.t === 'm' && x.move !== 'walk').map(x => h('span', { class: 'line-chip', style: 'background:' + (x.color || '#0F7C8F') }, trOf(N, x.line) || MOVE_FR[x.move] || x.move));
 }
-function navSteps(r, a, b){
+function navSteps(r, a, b, N){
   return h('ol', { class: 'nav-steps' }, r.secs.map(x => x.t === 'p'
-    ? h('li', { class: 'pt' }, h('b', null, x.name === 'start' ? a.name : x.name === 'goal' ? b.name : x.name), x.gate ? h('span', { class: 'gate' }, x.gate) : null, x.plat ? h('span', { class: 'muted small' }, ' · quai ' + x.plat) : null)
+    ? h('li', { class: 'pt' }, h('b', null, x.name === 'start' ? a.name : x.name === 'goal' ? b.name : trOf(N, x.name)), x.name !== 'start' && x.name !== 'goal' ? jaHint(N, x.name) : null, x.gate ? h('span', { class: 'gate', title: x.gate }, translateGate(x.gate)) : null, x.plat ? h('span', { class: 'muted small' }, ' · quai ' + x.plat) : null)
     : x.move === 'walk'
       ? h('li', { class: 'mv walk' }, 'À pied' + (x.min != null ? ' · ' + x.min + ' min' : '') + (x.dist ? ' · ' + fmtDist(x.dist) : ''))
       : h('li', { class: 'mv', style: '--lc:' + (x.color || '#0F7C8F') },
-          h('div', null, h('b', null, x.line || MOVE_FR[x.move] || x.move), x.dest ? ' → ' + x.dest : ''),
+          h('div', null, h('b', null, trOf(N, x.line) || MOVE_FR[x.move] || x.move), jaHint(N, x.line), x.dest ? ' → direction ' + trOf(N, x.dest) : ''),
           h('div', { class: 'muted small mono' }, [x.from && x.to ? x.from + ' – ' + x.to : '', x.min != null ? x.min + ' min' : '', MOVE_FR[x.move] || ''].filter(Boolean).join(' · ')),
-          x.getoff ? h('div', { class: 'small' }, 'Voiture conseillée : ' + x.getoff) : null)));
+          x.getoff ? h('div', { class: 'small' }, 'Voiture conseillée : ' + (/^\s*\d/.test(String(x.getoff).normalize('NFKC')) ? 'n° ' : '') + String(x.getoff).normalize('NFKC').replace(/号車/g, '').replace(/両目/g, '').replace(/前/g, ' (avant)').replace(/後/g, ' (arrière)').replace(/中/g, ' (milieu)')) : null)));
 }
 function navSection(a, b, g, st){
   const N = g.L && g.L.nav && g.L.nav.sig === legSig(a, b, []) ? g.L.nav : null;
   if (!st.navTime) st.navTime = (N && N.time) || navDefaultTime(a);
+  if (N && !N.tr) setTimeout(() => ensureNavTranslated(a, b), 0);
   const used = navUsage(), q = navQuota();
   return h('div', { class: 'sec' },
     h('div', { class: 'eyebrow' }, 'Itinéraires NAVITIME'),
@@ -1137,8 +1156,8 @@ function navSection(a, b, g, st){
     N ? N.routes.map((r, i) => h('div', { class: 'nav-route' + (N.chosen === i ? ' on' : '') },
       h('div', { class: 'spread' }, h('b', { class: 'mono' }, (r.dep || '?') + ' → ' + (r.arr || '?')),
         h('span', { class: 'small' }, [r.min != null ? r.min + ' min' : '', r.transfers != null ? r.transfers + ' corresp.' : '', r.fare != null ? '¥' + r.fare : ''].filter(Boolean).join(' · '))),
-      h('div', { class: 'row' }, navLineChips(r)),
-      (N.chosen === i || st.navOpen === i) ? navSteps(r, a, b) : null,
+      h('div', { class: 'row' }, navLineChips(r, N)),
+      (N.chosen === i || st.navOpen === i) ? navSteps(r, a, b, N) : null,
       h('div', { class: 'row' },
         N.chosen === i ? h('span', { class: 'chip solid' }, 'Retenu') : h('button', { class: 'btn', type: 'button', onclick: () => navChoose(a, b, i) }, 'Choisir'),
         N.chosen !== i ? h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.navOpen = st.navOpen === i ? null : i; S.sheet.render(); } }, st.navOpen === i ? 'Masquer le détail' : 'Détail') : null))) : null);

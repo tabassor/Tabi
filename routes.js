@@ -183,3 +183,79 @@ export async function navitimeRoutes(key, a, b, startTime){
       secs, shapes: shapeLines(it.shapes) };
   });
 }
+
+/* ---------- Traduction des résultats NAVITIME (japonais → lettres latines) ----------
+   1) OpenStreetMap (Overpass) : noms anglais officiels des gares et des lignes ;
+   2) dictionnaire des principales lignes et des sorties ;
+   3) à défaut, transcription des kana en rōmaji (les kanji restent tels quels). */
+const nfkc = s => String(s || '').normalize('NFKC').trim();
+const LINE_DICT = [
+  ['東京メトロ', 'Tokyo Metro '], ['都営', 'Toei '], ['ＪＲ', 'JR '], ['JR', 'JR '],
+  ['銀座線', 'Ginza Line'], ['丸ノ内線', 'Marunouchi Line'], ['日比谷線', 'Hibiya Line'], ['東西線', 'Tōzai Line'], ['千代田線', 'Chiyoda Line'],
+  ['有楽町線', 'Yūrakuchō Line'], ['半蔵門線', 'Hanzōmon Line'], ['南北線', 'Namboku Line'], ['副都心線', 'Fukutoshin Line'],
+  ['浅草線', 'Asakusa Line'], ['三田線', 'Mita Line'], ['新宿線', 'Shinjuku Line'], ['大江戸線', 'Ōedo Line'],
+  ['山手線', 'Yamanote Line'], ['中央・総武線', 'Chūō-Sōbu Line'], ['中央線快速', 'Chūō Rapid Line'], ['中央本線', 'Chūō Main Line'], ['中央線', 'Chūō Line'], ['総武線', 'Sōbu Line'],
+  ['京浜東北線', 'Keihin-Tōhoku Line'], ['埼京線', 'Saikyō Line'], ['湘南新宿ライン', 'Shōnan-Shinjuku Line'], ['上野東京ライン', 'Ueno-Tokyo Line'],
+  ['東海道新幹線', 'Tōkaidō Shinkansen'], ['山陽新幹線', 'San’yō Shinkansen'], ['東北新幹線', 'Tōhoku Shinkansen'], ['北陸新幹線', 'Hokuriku Shinkansen'], ['上越新幹線', 'Jōetsu Shinkansen'],
+  ['東海道線', 'Tōkaidō Line'], ['横須賀線', 'Yokosuka Line'], ['常磐線', 'Jōban Line'], ['京葉線', 'Keiyō Line'],
+  ['つくばエクスプレス', 'Tsukuba Express'], ['ゆりかもめ', 'Yurikamome'], ['りんかい線', 'Rinkai Line'], ['東京モノレール', 'Tokyo Monorail'],
+  ['京王線', 'Keiō Line'], ['小田急線', 'Odakyū Line'], ['東急東横線', 'Tōkyū Tōyoko Line'], ['東急田園都市線', 'Tōkyū Den-en-toshi Line'],
+  ['京急本線', 'Keikyū Main Line'], ['京成本線', 'Keisei Main Line'], ['西武池袋線', 'Seibu Ikebukuro Line'], ['西武新宿線', 'Seibu Shinjuku Line'], ['東武スカイツリーライン', 'Tōbu Skytree Line'],
+  ['御堂筋線', 'Midōsuji Line'], ['堺筋線', 'Sakaisuji Line'], ['谷町線', 'Tanimachi Line'], ['四つ橋線', 'Yotsubashi Line'], ['長堀鶴見緑地線', 'Nagahori Tsurumi-ryokuchi Line'],
+  ['烏丸線', 'Karasuma Line'], ['大阪環状線', 'Osaka Loop Line'], ['ＪＲ京都線', 'JR Kyōto Line'], ['奈良線', 'Nara Line'], ['嵯峨野線', 'Sagano Line'], ['嵐山線', 'Arashiyama Line'],
+  ['京阪本線', 'Keihan Main Line'], ['阪急京都線', 'Hankyū Kyōto Line'], ['近鉄奈良線', 'Kintetsu Nara Line'], ['近鉄京都線', 'Kintetsu Kyōto Line'], ['南海本線', 'Nankai Main Line'],
+  ['都営バス', 'Toei Bus'], ['市バス', 'City Bus'], ['バス', 'Bus'],
+];
+const GATE_DICT = [['中央口', 'centrale'], ['東口', 'Est'], ['西口', 'Ouest'], ['南口', 'Sud'], ['北口', 'Nord'], ['改札', ''], ['出口', ''], ['番', '']];
+const KANA = {'きゃ':'kya','きゅ':'kyu','きょ':'kyo','しゃ':'sha','しゅ':'shu','しょ':'sho','ちゃ':'cha','ちゅ':'chu','ちょ':'cho','にゃ':'nya','にゅ':'nyu','にょ':'nyo','ひゃ':'hya','ひゅ':'hyu','ひょ':'hyo','みゃ':'mya','みゅ':'myu','みょ':'myo','りゃ':'rya','りゅ':'ryu','りょ':'ryo','ぎゃ':'gya','ぎゅ':'gyu','ぎょ':'gyo','じゃ':'ja','じゅ':'ju','じょ':'jo','びゃ':'bya','びゅ':'byu','びょ':'byo','ぴゃ':'pya','ぴゅ':'pyu','ぴょ':'pyo',
+  'あ':'a','い':'i','う':'u','え':'e','お':'o','か':'ka','き':'ki','く':'ku','け':'ke','こ':'ko','さ':'sa','し':'shi','す':'su','せ':'se','そ':'so','た':'ta','ち':'chi','つ':'tsu','て':'te','と':'to','な':'na','に':'ni','ぬ':'nu','ね':'ne','の':'no','は':'ha','ひ':'hi','ふ':'fu','へ':'he','ほ':'ho','ま':'ma','み':'mi','む':'mu','め':'me','も':'mo','や':'ya','ゆ':'yu','よ':'yo','ら':'ra','り':'ri','る':'ru','れ':'re','ろ':'ro','わ':'wa','を':'o','ん':'n',
+  'が':'ga','ぎ':'gi','ぐ':'gu','げ':'ge','ご':'go','ざ':'za','じ':'ji','ず':'zu','ぜ':'ze','ぞ':'zo','だ':'da','ぢ':'ji','づ':'zu','で':'de','ど':'do','ば':'ba','び':'bi','ぶ':'bu','べ':'be','ぼ':'bo','ぱ':'pa','ぴ':'pi','ぷ':'pu','ぺ':'pe','ぽ':'po','ー':'-'};
+function kanaToRomaji(s){
+  s = s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)); // katakana → hiragana
+  let out = '';
+  for (let i = 0; i < s.length; i++){
+    const two = s.slice(i, i + 2);
+    if (s[i] === 'っ' && i + 1 < s.length){ const nx = KANA[s.slice(i + 1, i + 3)] || KANA[s[i + 1]]; if (nx){ out += nx[0]; continue; } }
+    if (KANA[two]){ out += KANA[two]; i++; continue; }
+    out += KANA[s[i]] ?? s[i];
+  }
+  return out;
+}
+const hasJa = s => /[぀-ヿ一-鿿]/.test(s);
+function dictLine(s){
+  let o = nfkc(s); let hit = false;
+  for (const [ja, en] of LINE_DICT){ const j = nfkc(ja); if (o.includes(j)){ o = o.split(j).join(en); hit = true; } }
+  return hit ? o.replace(/\s+/g, ' ').trim() : null;
+}
+export function translateGate(g){
+  let o = nfkc(g); if (!hasJa(o)) return o;
+  for (const [ja, en] of GATE_DICT) o = o.split(ja).join(en);
+  o = o.trim();
+  return o ? 'Sortie ' + o : nfkc(g);
+}
+// Dictionnaire japonais → latin pour une liste de noms de gares et de lignes, centré sur une zone.
+export async function translateNames(stations, lines, center){
+  const map = {};
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\"]/g, '\\$&');
+  const st = [...new Set(stations.map(nfkc).filter(hasJa))].slice(0, 60);
+  const ln = [...new Set(lines.map(nfkc).filter(hasJa))].slice(0, 30);
+  if (st.length || ln.length){
+    const d = 1.3, bb = `${(center.lat - d).toFixed(3)},${(center.lng - d).toFixed(3)},${(center.lat + d).toFixed(3)},${(center.lng + d).toFixed(3)}`;
+    const parts = [];
+    if (st.length){ const re = '^(' + st.map(esc).join('|') + ')(駅)?$'; parts.push(`node["railway"="station"]["name"~"${re}"](${bb});`, `node["public_transport"="station"]["name"~"${re}"](${bb});`); }
+    if (ln.length){ const re = '(' + ln.map(s => esc(s.replace(/^(ＪＲ|JR)/, ''))).join('|') + ')'; parts.push(`relation["type"="route_master"]["name"~"${re}"](${bb});`); }
+    try {
+      const j = await overpass(`[out:json][timeout:40];(${parts.join('')});out tags;`);
+      for (const el of j.elements || []){
+        const t = el.tags || {}; const ja = nfkc(t.name || '').replace(/駅$/, '');
+        const en = t['name:en'] || t['name:ja-Latn'] || t['name:ja_rm'] || '';
+        if (!ja || !en) continue;
+        if (el.type === 'node'){ if (!map[ja]) map[ja] = en.replace(/ Station$/i, ''); }
+        else for (const l of ln) if (ja.includes(l.replace(/^(ＪＲ|JR)/, '')) && !map[l]) map[l] = en;
+      }
+    } catch (e){ console.warn('Tabi traduction', e); }
+  }
+  for (const s of st) if (!map[s]) map[s] = hasJa(kanaToRomaji(s)) ? '' : kanaToRomaji(s).replace(/^./, c => c.toUpperCase());
+  for (const l of ln){ const dl = dictLine(l); if (dl && (!map[l] || /[぀-鿿]/.test(map[l]))) map[l] = dl; }
+  return map;
+}
