@@ -256,7 +256,7 @@ function renderAll(){
   if (typingIn(main) || typingIn($('#sheetRoot'))){ S.deferred = true; return; }
   const y = window.scrollY;
   main.replaceChildren(...renderMain());
-  if (S.view === 'jour') updateMap();
+  if (S.view === 'jour' || S.view === 'itin') updateMap();
   if (S.sheet) S.sheet.render();
   window.scrollTo(0, y);
 }
@@ -339,6 +339,8 @@ function mapPanel(){
     M.map.addLayer({ id: 'route-straight', type: 'line', source: 'route', filter: ['all', ['==', ['get', 'done'], false], ['==', ['get', 'kind'], 'straight']], paint: { 'line-color': col('--route') || '#8A93AB', 'line-width': 3, 'line-dasharray': [2, 2] } });
     M.map.addLayer({ id: 'route-walk', type: 'line', source: 'route', filter: ['all', ['==', ['get', 'done'], false], ['==', ['get', 'kind'], 'walk']], layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': col('--route') || '#8A93AB', 'line-width': 4 } });
     M.map.addLayer({ id: 'route-done', type: 'line', source: 'route', filter: ['==', ['get', 'done'], true], layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': col('--stamp') || '#6338B0', 'line-width': 4 } });
+    M.map.addSource('over', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    M.map.addLayer({ id: 'over-line', type: 'line', source: 'over', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 3, 'line-opacity': 0.85 } });
     M.map.addSource('focus', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     M.map.addLayer({ id: 'focus-casing', type: 'line', source: 'focus', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
     M.map.addLayer({ id: 'focus-line', type: 'line', source: 'focus', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': col('--stamp') || '#6338B0', 'line-width': 5 } });
@@ -366,6 +368,8 @@ function markerEl(cls, text, onclick, title){
 }
 function updateMap(){
   if (!M.map) return;
+  if (S.view === 'itin'){ updateOverview(); return; }
+  { const o = M.map.getSource && M.ready && M.map.getSource('over'); if (o) o.setData({ type: 'FeatureCollection', features: [] }); }
   const day = currentDay();
   M.tools.replaceChildren(
     h('button', { class: 'btn', type: 'button', onclick: () => startPlacing('Touche la carte pour placer le nouveau lieu', c => openPlaceForm({ day, lat: c.lat, lng: c.lng, coordSource: 'carte' })) }, '＋ Lieu sur la carte'),
@@ -509,10 +513,11 @@ const ICONS = {
   idees: 'M9 18h6M10 21h4M12 3a6 6 0 00-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0012 3z',
   souvenirs: 'M4 7h4l2-2h4l2 2h4v12H4z M12 10a3 3 0 100 6 3 3 0 000-6z',
   claude: 'M4 5h16v11H9l-5 4z M8 9h8M8 12h5',
+  itin: 'M5 4h14M5 9h14M5 14h9M5 19h6M17 13l3 3-3 3M14 16h6',
 };
 function renderTabs(){
   const nS = all('place').filter(p => p.status === 'suggested').length;
-  const tabs = [['jour', 'Journée'], ['resa', 'Réservations'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', nS ? 'Claude · ' + nS : 'Claude']];
+  const tabs = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', 'Résas'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', nS ? 'Claude · ' + nS : 'Claude']];
   $('#tabs').replaceChildren(...tabs.map(([k, l]) => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true');
@@ -534,6 +539,7 @@ function renderMain(){
   const out = [];
   if (S.syncErr) out.push(h('div', { class: 'banner warn' }, S.syncErr));
   if (S.view === 'jour') out.push(...viewDay());
+  else if (S.view === 'itin') out.push(...viewItin());
   else if (S.view === 'resa') out.push(...viewBookings());
   else if (S.view === 'idees') out.push(...viewIdeas());
   else if (S.view === 'souvenirs') out.push(...viewMemories());
@@ -549,6 +555,85 @@ function welcome(kind){
       : h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => connect(false) }, 'Se connecter avec Google')),
     !isStandalone() ? h('button', { class: 'btn', type: 'button', onclick: installApp, style: 'align-self:flex-start' }, 'Installer Tabi sur ce téléphone') : null,
     h('p', { class: 'muted small', style: 'margin:0' }, 'Google affichera « application non validée » : c’est normal pour cette appli privée. Choisis « Paramètres avancés », puis « Accéder à Tabi ».'));
+}
+
+/* ---- Itinéraire : vue d'ensemble du voyage ---- */
+const DAY_COLORS = ['#6338B0', '#0F7C8F', '#B4532A', '#2B7A57', '#2F6DB5', '#A8326E', '#7A6A12', '#4B5BA8', '#C0392B', '#11806A'];
+const dayColor = i => DAY_COLORS[i % DAY_COLORS.length];
+function goDay(d){ S.day = d; S.view = 'jour'; LS.set('tabi.view', 'jour'); M.focus = null; M.sig = ''; window.scrollTo(0, 0); renderAll(); }
+function viewItin(){
+  const t = trip(); const ds = tripDays(); const td = todayIso();
+  const allP = places().filter(p => p.day && ds.includes(p.day));
+  const cities = [...new Set(hotelStays().map(st => st.b.city).filter(Boolean))];
+  const cards = ds.map((d, i) => {
+    const { A, ps } = dayModel(d);
+    const bks = bookingsOf(d).filter(b => b.kind !== 'hotel');
+    const done = ps.filter(p => p.status === 'visited').length;
+    const night = A.end ? A.end.name : null;
+    const moving = A.start && A.end && A.start.bookingId !== A.end.bookingId;
+    const np = all('media').filter(m => m.role === 'photo' && (m.day === d || (m.placeId && ps.some(p => p.id === m.placeId)))).length;
+    return h('button', { class: 'itin-day' + (d === td ? ' today' : ''), type: 'button', onclick: () => goDay(d), 'aria-label': 'Ouvrir la journée du ' + fmtDay(d, { weekday: 'long', day: 'numeric', month: 'long' }) },
+      h('span', { class: 'itin-bar', style: 'background:' + dayColor(i) }),
+      h('div', { class: 'itin-body' },
+        h('div', { class: 'spread' },
+          h('div', null, h('span', { class: 'itin-j mono', style: 'color:' + dayColor(i) }, 'J' + (i + 1)), h('b', null, ' ' + fmtDay(d, { weekday: 'long', day: 'numeric', month: 'long' }))),
+          h('div', { class: 'row' }, d === td ? h('span', { class: 'chip solid' }, 'aujourd’hui') : null,
+            ps.length ? h('span', { class: 'chip' + (done === ps.length ? ' solid' : '') }, done + '/' + ps.length) : null)),
+        ps.length ? h('ol', { class: 'itin-places' }, ps.map(p => h('li', { class: p.status === 'visited' ? 'v' : p.status === 'skipped' ? 's' : '' },
+          p.time ? h('span', { class: 'mono muted' }, p.time + ' ') : null, p.name))) : h('div', { class: 'muted small' }, 'Journée libre, rien de prévu.'),
+        bks.length ? h('div', { class: 'small muted' }, bks.map(b => (b.time ? b.time + ' ' : '') + b.title).join(' · ')) : null,
+        h('div', { class: 'row small muted' },
+          moving ? h('span', null, '→ changement d’hôtel : ' + A.end.name) : night ? h('span', null, 'Nuit : ' + night) : (d !== ds[ds.length - 1] ? h('span', { class: 'warn-t' }, 'Pas d’hôtel pour cette nuit') : null),
+          np ? h('span', null, '· ' + np + ' photo' + (np > 1 ? 's' : '')) : null)),
+      h('span', { class: 'leg-go', 'aria-hidden': 'true' }, '›'));
+  });
+  const ideas = placesOf(null).length;
+  return [
+    h('div', { class: 'split' },
+      h('div', { class: 'map-col' }, mapPanel()),
+      h('div', null,
+        h('div', null, h('div', { class: 'eyebrow' }, ds.length + ' jours · ' + fmtDay(t.start, { day: 'numeric', month: 'short' }) + ' → ' + fmtDay(t.end, { day: 'numeric', month: 'short', year: 'numeric' }) + (cities.length ? ' · ' + cities.join(', ') : '')),
+          h('h2', null, t.name)),
+        h('div', { class: 'stats small' }, h('div', null, h('b', null, allP.length), 'lieux prévus'), h('div', null, h('b', null, allP.filter(p => p.status === 'visited').length), 'visités'),
+          h('div', null, h('b', null, hotelStays().length), 'hôtels'), h('div', null, h('b', null, bookings().filter(b => b.kind !== 'hotel').length), 'autres résas')),
+        h('div', { class: 'itin-list' }, cards),
+        ideas ? h('button', { class: 'btn', type: 'button', onclick: () => { S.view = 'idees'; LS.set('tabi.view', 'idees'); renderAll(); } }, ideas + ' idée' + (ideas > 1 ? 's' : '') + ' pas encore placée' + (ideas > 1 ? 's' : '')) : null))
+  ];
+}
+function updateOverview(){
+  M.tools.replaceChildren();
+  if (!M.focus && !M.placing) M.banner.hidden = true;
+  if (!M.ready) return;
+  M.markers.forEach(m => m.remove()); M.markers = [];
+  const empty = { type: 'FeatureCollection', features: [] };
+  for (const id of ['route', 'focus']){ const s = M.map.getSource(id); if (s) s.setData(empty); }
+  const ds = tripDays(); const feats = []; const fit = []; const seenHotel = new Set();
+  ds.forEach((d, i) => {
+    const { seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
+    for (let j = 1; j < pts.length; j++){
+      const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
+      feats.push({ type: 'Feature', properties: { color: col }, geometry: { type: 'LineString', coordinates: g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]] } });
+    }
+    pts.forEach(p => {
+      fit.push([p.lng, p.lat]);
+      if (p.anchor){
+        if (seenHotel.has(p.bookingId)) return; seenHotel.add(p.bookingId);
+        M.markers.push(new maplibregl.Marker({ element: markerEl('h', 'H', () => openBooking(p.bookingId), p.name) }).setLngLat([p.lng, p.lat]).addTo(M.map));
+        return;
+      }
+      const el = markerEl('dayk' + (p.status === 'visited' ? ' v' : ''), String(i + 1), () => goDay(d), 'J' + (i + 1) + ' · ' + p.name);
+      el.style.borderColor = col; el.style.color = p.status === 'visited' ? '#fff' : col; if (p.status === 'visited') el.style.background = col;
+      M.markers.push(new maplibregl.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(M.map));
+    });
+  });
+  const o = M.map.getSource('over'); if (o) o.setData({ type: 'FeatureCollection', features: feats });
+  const sig = 'itin|' + fit.length;
+  if (sig !== M.sig){
+    if (fit.length === 1) M.map.jumpTo({ center: fit[0], zoom: 13 });
+    else if (fit.length > 1){ const b = new maplibregl.LngLatBounds(); fit.forEach(c => b.extend(c)); M.map.fitBounds(b, { padding: 40, maxZoom: 15, duration: 0 }); }
+    M.sig = sig;
+  }
+  requestAnimationFrame(() => M.map && M.map.resize());
 }
 
 /* ---- Journée ---- */
