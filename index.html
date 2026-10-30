@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Tabi 旅</title>
+<meta name="theme-color" content="#1A2340">
+<meta name="description" content="Carnet de voyage partagé : journées, carte, réservations, photos et notes.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Tabi">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="gut">
+    <div class="top-row">
+      <div class="brand">Tabi <small>旅</small></div>
+      <button class="sync" id="sync" type="button"></button>
+      <button class="trip-btn" id="tripBtn" type="button" aria-label="Voyage et réglages"><span id="tripName">Tabi</span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+    </div>
+    <div class="days" id="days" role="tablist" aria-label="Jours du voyage"></div>
+  </div>
+</header>
+<main id="main"></main>
+<nav class="tabs" id="tabs" aria-label="Sections"></nav>
+<div id="sheetRoot"></div>
+<div id="toastRoot"></div>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="vendor/maplibre-gl.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
