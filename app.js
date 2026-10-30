@@ -313,12 +313,12 @@ function parseCoords(s){
   return null;
 }
 const dist = (a, b) => { const R = 6371e3, t = Math.PI / 180, dLa = (b.lat - a.lat) * t, dLo = (b.lng - a.lng) * t; const x = Math.sin(dLa / 2) ** 2 + Math.cos(a.lat * t) * Math.cos(b.lat * t) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(x)); };
-const fmtDist = m => m < 950 ? Math.round(m / 10) * 10 + ' m' : (m / 1000).toFixed(m < 9500 ? 1 : 0).replace('.', ',') + ' km';
+const fmtDist = m => !isFinite(m) || m == null ? '' : m < 950 ? Math.round(m / 10) * 10 + ' m' : (m / 1000).toFixed(m < 9500 ? 1 : 0).replace('.', ',') + ' km';
 
 /* ================= carte ================= */
 // Deux moteurs derrière la même interface : Google Maps (en ligne, si la clé l'autorise) et MapLibre/OpenStreetMap (toujours, hors ligne compris).
 const M = { el: null, eng: null, kind: null, ready: false, placing: null, focus: null, sig: '', showIdeas: LS.get('tabi.ideas') === '1', transit: LS.get('tabi.transit') !== '0' };
-const G = { failed: false, loading: null };
+const G = { failed: false, loading: null, reason: '' };
 const mapPref = () => LS.get('tabi.mapEngine') || 'auto';
 function wantedEngine(){
   if (mapPref() === 'osm') return 'osm';
@@ -335,7 +335,7 @@ function mapPanel(){
       const next = M.kind === 'google' ? 'osm' : 'auto';
       if (next === 'auto' && !gKey()){ toast('Ajoute la clé Google dans les réglages du voyage.'); return; }
       if (next === 'auto' && !S.online){ toast('Carte Google disponible en ligne uniquement.'); return; }
-      G.failed = false; LS.set('tabi.mapEngine', next); ensureEngine(); } });
+      G.failed = false; G.reason = ''; G.loading = null; LS.set('tabi.mapEngine', next); ensureEngine(); } });
     M.el = h('div', { class: 'map' }, M.inner, M.msg, M.banner, M.tools, M.badge);
   }
   ensureEngine();
@@ -347,7 +347,11 @@ function ensureEngine(){
   if (M.eng){ try { M.eng.destroy(); } catch {} }
   M.eng = null; M.ready = false; M.kind = want; M.sig = ''; M.msg.hidden = false; M.msg.textContent = 'Chargement de la carte…';
   M.inner.replaceChildren(); const box = h('div', { style: 'position:absolute;inset:0' }); M.inner.append(box);
-  M.badge.textContent = want === 'google' ? 'Google · passer à OSM' : (gKey() ? 'OSM · passer à Google' : 'OpenStreetMap');
+  M.badge.textContent = want === 'google' ? 'Google · passer à OSM'
+    : !gKey() ? 'OpenStreetMap'
+    : G.failed ? 'OSM · Google indisponible (' + (G.reason || 'erreur') + ') · réessayer'
+    : !S.online ? 'OSM · hors ligne'
+    : 'OSM · passer à Google';
   M.badge.hidden = !gKey();
   const eng = want === 'google' ? googleEngine(box) : osmEngine(box);
   M.eng = eng;
@@ -400,7 +404,7 @@ function loadGoogleMaps(){
   G.loading = new Promise((res, rej) => {
     const t = setTimeout(() => rej(new Error('délai')), 15000);
     window.__tabiGmaps = () => { clearTimeout(t); res(); };
-    window.gm_authFailure = () => { G.failed = true; toast('Carte Google refusée : active « Maps JavaScript API » et ajoute-la aux API autorisées de la clé.'); ensureEngine(); };
+    window.gm_authFailure = () => { G.failed = true; G.reason = 'clé refusée : active Maps JavaScript API'; toast('Carte Google refusée : active « Maps JavaScript API » et ajoute-la aux API autorisées de la clé.'); ensureEngine(); };
     const s = document.createElement('script');
     s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(gKey()) + '&language=fr&region=JP&callback=__tabiGmaps&loading=async';
     s.async = true; s.onerror = () => { clearTimeout(t); rej(new Error('chargement')); };
@@ -417,7 +421,7 @@ function googleEngine(box){
     transitLayer = new google.maps.TransitLayer(); if (M.transit) transitLayer.setMap(map);
     map.addListener('click', e => { if (M.placing && e.latLng){ if (e.stop) e.stop(); mapClicked({ lat: e.latLng.lat(), lng: e.latLng.lng() }); } });
     google.maps.event.addListenerOnce(map, 'idle', () => engineReady(eng));
-  }).catch(e => { console.warn('Tabi Google Maps', e); if (M.eng === eng){ G.failed = true; toast('Carte Google indisponible, retour à OpenStreetMap.'); ensureEngine(); } });
+  }).catch(e => { console.warn('Tabi Google Maps', e); if (M.eng === eng){ G.failed = true; G.reason = 'Google Maps ne s’est pas chargé'; toast('Carte Google indisponible, retour à OpenStreetMap.'); ensureEngine(); } });
   function overlay(el, p, offX){
     const o = new google.maps.OverlayView();
     o.onAdd = () => { el.style.position = 'absolute'; o.getPanes().overlayMouseTarget.appendChild(el); google.maps.OverlayView.preventMapHitsAndGesturesFrom(el); };
@@ -985,7 +989,7 @@ async function computePois(a, b, radius){
   const pois = await poisAlong(shapeCoords(g.route), radius);
   await setLeg(a, b, { pois, poisRadius: radius, poisSig: g.route.sig });
 }
-const nearFresh = g => !!(g.L && g.L.near && g.L.near.sig === legSig(g.a, g.b, []) && ['a', 'b'].every(k => g.L.near[k] && g.L.near[k].entrances.every(e => num(e.lat) != null)));
+const nearFresh = g => !!(g.L && g.L.near && g.L.near.sig === legSig(g.a, g.b, []) && ['a', 'b'].every(k => g.L.near[k] && [...g.L.near[k].entrances, ...g.L.near[k].stations, ...g.L.near[k].bus].every(e => num(e.lat) != null && num(e.d) != null)));
 const poisFresh = (g, radius) => g.L && g.L.pois && g.route && g.L.poisSig === g.route.sig && g.L.poisRadius === radius;
 const errText = e => S.online ? 'Service de calcul indisponible (' + (e.message || e) + '). Réessaie dans un moment.' : 'Hors ligne : calcul impossible maintenant.';
 

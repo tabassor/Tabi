@@ -216,3 +216,5 @@ ol.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:5px;f
 .map-badge{position:absolute;left:8px;top:8px;z-index:2;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.18)}
 .map-banner:not([hidden]) ~ .map-badge{display:none}
 .me-dot{width:16px;height:16px;border-radius:50%;background:#1a73e8;border:3px solid #fff;box-shadow:0 0 0 6px rgba(26,115,232,.25)}
+
+.map-badge{max-width:calc(100% - 70px);text-align:left;white-space:normal;line-height:1.3}
