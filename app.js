@@ -3,7 +3,7 @@
 import { CONFIG } from './config.js';
 import { drive, signIn, hasToken, clearToken } from './drive.js';
 import { idb } from './store.js';
-import { walkRoute, transitNear, poisAlong, shapeCoords } from './routes.js';
+import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes } from './routes.js';
 
 /* ================= utilitaires ================= */
 const $ = s => document.querySelector(s);
@@ -516,8 +516,9 @@ function updateMap(){
   for (let j = 1; j < pts.length; j++){
     const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
     const done = (a.anchor || a.status === 'visited') && !b.anchor && b.status === 'visited';
-    const walk = g.eff === 'walk' && g.route;
-    lines.push({ coords: walk ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]], color: done ? cStamp : cRoute, width: walk || done ? 4 : 3, dash: !walk && !done });
+    const walk = g.eff === 'walk' && g.route; const nr = g.eff === 'transit' && navChosen(g);
+    if (nr && nr.shapes.length) nr.shapes.forEach(sh => lines.push({ coords: sh.coords, color: sh.color || '#0F7C8F', width: 4 }));
+    else lines.push({ coords: walk ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]], color: done ? cStamp : cRoute, width: walk || done ? 4 : 3, dash: !walk && !done });
   }
   // trajet mis en avant (fiche trajet)
   const F = M.focus && legFromId(M.focus, day);
@@ -527,6 +528,8 @@ function updateMap(){
     const fl = [];
     if (g.eff === 'walk' && g.route) fl.push(shapeCoords(g.route));
     if (g.eff !== 'walk' && g.L && g.L.lastMile && g.L.lastMile.route) fl.push(shapeCoords(g.L.lastMile.route));
+    { const nr = g.eff === 'transit' && navChosen(g); if (nr) nr.shapes.forEach(sh => { lines.push({ coords: sh.coords, color: sh.color || '#0F7C8F', width: 6, casing: true }); focusCoords.push(...sh.coords); });
+      if (nr) nr.secs.filter(x => x.t === 'p' && x.gate && hasPos(x)).forEach(x => E.marker(markerEl('ent', x.gate.replace(/^(Exit|出口)\s*/i, '').slice(0, 4) || 'M', () => toast(x.name + ' · ' + x.gate), x.name + ' · ' + x.gate), x)); }
     fl.forEach(c => { lines.push({ coords: c, color: cStamp, width: 5, casing: true }); focusCoords.push(...c); });
     if (g.eff === 'walk'){
       g.via.forEach((v, k) => E.marker(markerEl('via', String.fromCharCode(97 + k), () => openLeg(F.a, F.b), 'Étape : ' + v.name), v));
@@ -737,7 +740,9 @@ function updateOverview(){
     const { A, ps, seq } = daySeq(d); const pts = seq.filter(hasPos); const col = dayColor(i);
     for (let j = 1; j < pts.length; j++){
       const a = pts[j - 1], b = pts[j]; const g = legInfo(a, b);
-      lines.push({ coords: g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]], color: col, width: 3, opacity: 0.85 });
+      const nr = g.eff === 'transit' && navChosen(g);
+      if (nr && nr.shapes.length) nr.shapes.forEach(sh => lines.push({ coords: sh.coords, color: col, width: 3, opacity: 0.85 }));
+      else lines.push({ coords: g.eff === 'walk' && g.route ? shapeCoords(g.route) : [[a.lng, a.lat], [b.lng, b.lat]], color: col, width: 3, opacity: 0.85 });
     }
     // lieux du jour : petits points à la couleur du jour
     const placed = ps.filter(hasPos);
@@ -1064,14 +1069,15 @@ function openLeg(a, b){
       const n = g.L && g.L.near;
       body.push(h('div', { class: 'sec' },
         h('div', { class: 'row' }, h('a', { class: 'btn primary', href: legUrlFor(a, b), target: '_blank', rel: 'noopener' }, 'Itinéraire et horaires dans Google Maps'),
-          n ? h('button', { class: 'btn', type: 'button', onclick: () => showOnMap(close) }, 'Voir sorties sur la carte') : null),
+          n || navChosen(g) ? h('button', { class: 'btn', type: 'button', onclick: () => showOnMap(close) }, 'Voir sur la carte') : null),
         h('div', { class: 'muted small' }, 'Lignes, correspondances et horaires : Google Maps. Ci-dessous, les entrées et sorties proches d’après OpenStreetMap ; vérifie la sortie conseillée par Google Maps.')));
+      if (navKey()) body.push(navSection(a, b, g, st));
       { const pk = (g.L && g.L.pick) || {};
         const f = h('form', { class: 'sec', onsubmit: async e => { e.preventDefault(); const fd = new FormData(f); document.activeElement && document.activeElement.blur();
           const pick = { min: +fd.get('min') || null, lines: String(fd.get('lines') || '').trim() || null, dep: fd.get('dep') || null, exit: String(fd.get('exit') || '').trim() || null };
           await setLeg(a, b, { pick: pick.min || pick.lines ? pick : null }, pick.min || pick.lines ? 'Itinéraire retenu enregistré' : 'Itinéraire retenu effacé'); } },
           h('div', { class: 'eyebrow' }, 'Itinéraire retenu'),
-          h('div', { class: 'muted small' }, 'Choisis ton itinéraire dans Google Maps, puis note-le ici : il s’affichera dans la journée et restera disponible hors ligne.'),
+          h('div', { class: 'muted small' }, navKey() ? 'Rempli automatiquement quand tu choisis un itinéraire NAVITIME ; tu peux aussi le saisir à partir de Google Maps.' : 'Choisis ton itinéraire dans Google Maps, puis note-le ici : il s’affichera dans la journée et restera disponible hors ligne.'),
           h('div', { class: 'grid2' },
             h('label', { class: 'f' }, 'Durée (min)', h('input', { type: 'number', name: 'min', id: 'pk-min', min: '1', max: '600', inputmode: 'numeric', value: pk.min || '' })),
             h('label', { class: 'f' }, 'Départ', h('input', { type: 'time', name: 'dep', id: 'pk-dep', value: pk.dep || '' }))),
@@ -1103,6 +1109,72 @@ function openLeg(a, b){
   });
 }
 /* ---- Carte Google intégrée (Maps Embed API, clé rangée dans le Drive : data/config_config.json) ---- */
+/* ---- NAVITIME (clé RapidAPI rangée dans le Drive : data/secret_navitime.json) ---- */
+const navKey = () => { const x = S.items.get('navitime'); return (x && x.rapidApiKey) || ''; };
+const navQuota = () => (S.items.get('navitime') || {}).monthlyQuota || 500;
+const monthKey = () => todayIso().slice(0, 7);
+const navUsage = () => { const u = S.items.get('navusage'); return u && u.month === monthKey() ? (u.n || 0) : 0; };
+const bumpNav = () => save({ id: 'navusage', type: 'usage', month: monthKey(), n: navUsage() + 1 });
+function navChosen(g){ const N = g.L && g.L.nav; return N && N.chosen != null && N.sig === legSig(g.a, g.b, []) ? N.routes[N.chosen] || null : null; }
+const MOVE_FR = { walk: 'à pied', local_train: 'omnibus', rapid_train: 'rapide', semiexpress_train: 'semi-express', express_train: 'express', ultraexpress_train: 'limited express', superexpress_train: 'Shinkansen', sleeper_ultraexpress: 'train de nuit', local_bus: 'bus', highway_bus: 'bus express', shuttle_bus: 'navette', ferry: 'ferry', domestic_flight: 'avion', car: 'voiture', bicycle: 'vélo' };
+function navDefaultTime(a){
+  const t = a.time || (a.anchor ? (a.checkOut || '09:30') : null);
+  if (!t) return '10:00';
+  const [hh, mm] = t.split(':').map(Number); const m = hh * 60 + mm + (a.anchor ? 0 : 60);
+  return pad2(Math.floor(m / 60) % 24) + ':' + pad2(m % 60);
+}
+async function navSearch(a, b, st){
+  if (!S.online){ st.err = 'Hors ligne : recherche NAVITIME impossible maintenant.'; S.sheet && S.sheet.render(); return; }
+  if (navUsage() >= navQuota()){ st.err = 'Quota mensuel NAVITIME atteint (' + navQuota() + ' requêtes).'; S.sheet && S.sheet.render(); return; }
+  const day = b.day || a.day || currentDay();
+  st.busy = 'Recherche NAVITIME…'; st.err = ''; S.sheet && S.sheet.render();
+  try {
+    const routes = await navitimeRoutes(navKey(), a, b, day + 'T' + st.navTime + ':00');
+    await bumpNav();
+    await setLeg(a, b, { nav: { routes, chosen: null, time: st.navTime, day, at: new Date().toISOString(), sig: legSig(a, b, []) } });
+    if (!routes.length) st.err = 'NAVITIME n’a trouvé aucun itinéraire pour ce trajet.';
+  } catch (e){ console.warn('Tabi NAVITIME', e); st.err = e.message || String(e); if (e.status) await bumpNav().catch(() => {}); }
+  st.busy = ''; S.sheet && S.sheet.render();
+}
+async function navChoose(a, b, i){
+  const g = legInfo(a, b); const N = g.L.nav; const r = N.routes[i];
+  const trains = r.secs.filter(x => x.t === 'm' && x.move !== 'walk');
+  const exit = [...r.secs].reverse().find(x => x.t === 'p' && x.gate);
+  await setLeg(a, b, { nav: { ...N, chosen: i }, pick: { min: r.min, lines: trains.map(x => x.line).filter(Boolean).join(' → ') || null, dep: r.dep || null, exit: exit ? exit.gate : null, src: 'navitime' } }, 'Itinéraire retenu');
+}
+function navLineChips(r){
+  return r.secs.filter(x => x.t === 'm' && x.move !== 'walk').map(x => h('span', { class: 'line-chip', style: 'background:' + (x.color || '#0F7C8F') }, x.line || MOVE_FR[x.move] || x.move));
+}
+function navSteps(r, a, b){
+  return h('ol', { class: 'nav-steps' }, r.secs.map(x => x.t === 'p'
+    ? h('li', { class: 'pt' }, h('b', null, x.name === 'start' ? a.name : x.name === 'goal' ? b.name : x.name), x.gate ? h('span', { class: 'gate' }, x.gate) : null, x.plat ? h('span', { class: 'muted small' }, ' · quai ' + x.plat) : null)
+    : x.move === 'walk'
+      ? h('li', { class: 'mv walk' }, 'À pied' + (x.min != null ? ' · ' + x.min + ' min' : '') + (x.dist ? ' · ' + fmtDist(x.dist) : ''))
+      : h('li', { class: 'mv', style: '--lc:' + (x.color || '#0F7C8F') },
+          h('div', null, h('b', null, x.line || MOVE_FR[x.move] || x.move), x.dest ? ' → ' + x.dest : ''),
+          h('div', { class: 'muted small mono' }, [x.from && x.to ? x.from + ' – ' + x.to : '', x.min != null ? x.min + ' min' : '', MOVE_FR[x.move] || ''].filter(Boolean).join(' · ')),
+          x.getoff ? h('div', { class: 'small' }, 'Voiture conseillée : ' + x.getoff) : null)));
+}
+function navSection(a, b, g, st){
+  const N = g.L && g.L.nav && g.L.nav.sig === legSig(a, b, []) ? g.L.nav : null;
+  if (!st.navTime) st.navTime = (N && N.time) || navDefaultTime(a);
+  const used = navUsage(), q = navQuota();
+  return h('div', { class: 'sec' },
+    h('div', { class: 'eyebrow' }, 'Itinéraires NAVITIME'),
+    h('div', { class: 'row', style: 'flex-wrap:nowrap' },
+      h('label', { class: 'f', style: 'flex-direction:row;align-items:center;gap:8px' }, 'Départ', h('input', { type: 'time', id: 'nav-time', value: st.navTime, style: 'width:auto', onchange: e => { st.navTime = e.target.value || st.navTime; } })),
+      h('button', { class: 'btn primary', type: 'button', disabled: st.busy || !S.online ? true : null, onclick: () => navSearch(a, b, st) }, N ? 'Relancer' : 'Chercher')),
+    h('div', { class: 'muted small' }, used + ' / ' + q + ' requêtes ce mois · horaires indicatifs, à confirmer sur place' + (N ? ' · recherché le ' + fmtDay(isoDay(new Date(N.at))) + ' pour ' + N.time : '')),
+    N ? N.routes.map((r, i) => h('div', { class: 'nav-route' + (N.chosen === i ? ' on' : '') },
+      h('div', { class: 'spread' }, h('b', { class: 'mono' }, (r.dep || '?') + ' → ' + (r.arr || '?')),
+        h('span', { class: 'small' }, [r.min != null ? r.min + ' min' : '', r.transfers != null ? r.transfers + ' corresp.' : '', r.fare != null ? '¥' + r.fare : ''].filter(Boolean).join(' · '))),
+      h('div', { class: 'row' }, navLineChips(r)),
+      (N.chosen === i || st.navOpen === i) ? navSteps(r, a, b) : null,
+      h('div', { class: 'row' },
+        N.chosen === i ? h('span', { class: 'chip solid' }, 'Retenu') : h('button', { class: 'btn', type: 'button', onclick: () => navChoose(a, b, i) }, 'Choisir'),
+        N.chosen !== i ? h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.navOpen = st.navOpen === i ? null : i; S.sheet.render(); } }, st.navOpen === i ? 'Masquer le détail' : 'Détail') : null))) : null);
+}
+
 const gKey = () => { const c = S.items.get('config'); return (c && c.mapsEmbedKey) || ''; };
 function gEmbedUrl(a, b, mode, via){
   const m = { walk: 'walking', transit: 'transit', taxi: 'driving' }[mode] || 'transit';

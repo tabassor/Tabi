@@ -133,3 +133,53 @@ export async function poisAlong(coords, radius){
   }
   return out.sort((a, b) => b.score - a.score).slice(0, 30);
 }
+
+/* ---------- NAVITIME Route (totalnavi) via RapidAPI : itinéraires en transports au Japon ---------- */
+const NAV_HOST = 'navitime-route-totalnavi.p.rapidapi.com';
+const r5 = v => Math.round(v * 1e5) / 1e5;
+function fareOf(f){
+  if (f == null) return null;
+  if (typeof f === 'number') return f;
+  if (typeof f === 'object'){ const v = Object.values(f).find(x => typeof x === 'number'); return v ?? null; }
+  return null;
+}
+const addMin = (t, n) => { if (!t) return ''; const [h, m] = t.split(':').map(Number); const x = h * 60 + m + (n || 0); return String(Math.floor(x / 60) % 24).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0'); };
+const hhmm = s => { const m = String(s || '').match(/T(\d\d:\d\d)/); return m ? m[1] : ''; };
+function shapeLines(shapes){
+  const out = [];
+  for (const f of (shapes && shapes.features) || []){
+    const g = f.geometry || {}; const p = f.properties || {};
+    const col = p.color ? (String(p.color).startsWith('#') ? p.color : '#' + p.color) : (p.inline_style && p.inline_style.color) || null;
+    const lines = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+    for (const l of lines) if (l && l.length > 1) out.push({ color: col, coords: l.map(([x, y]) => [r5(x), r5(y)]) });
+  }
+  return out;
+}
+export async function navitimeRoutes(key, a, b, startTime){
+  const q = new URLSearchParams({ start: a.lat + ',' + a.lng, goal: b.lat + ',' + b.lng, start_time: startTime, limit: '3', shape: 'true', shape_color: 'railway_line', lang: 'en', datum: 'wgs84' });
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), 25000);
+  let r;
+  try { r = await fetch('https://' + NAV_HOST + '/route_transit?' + q, { headers: { 'x-rapidapi-key': key, 'x-rapidapi-host': NAV_HOST }, signal: c.signal }); }
+  catch (e){ throw new Error(e.name === 'AbortError' ? 'NAVITIME ne répond pas (délai dépassé)' : 'NAVITIME injoignable (réseau)'); }
+  finally { clearTimeout(t); }
+  const txt = await r.text(); let j = null; try { j = JSON.parse(txt); } catch {}
+  if (!r.ok){
+    const msg = (j && (j.message || (j.error && (j.error.message || j.error)))) || txt.slice(0, 160);
+    const e = new Error(r.status === 429 ? 'Quota NAVITIME atteint pour le moment.' : r.status === 403 ? 'Clé NAVITIME refusée ou abonnement absent : ' + msg : 'NAVITIME : erreur ' + r.status + ' · ' + msg);
+    e.status = r.status; throw e;
+  }
+  const items = (j && j.items) || [];
+  return items.map(it => {
+    const m = (it.summary && it.summary.move) || {};
+    const secs = (it.sections || []).map(s => s.type === 'point'
+      ? { t: 'p', name: s.name || '', gate: s.gateway || '', plat: s.start_platform || s.goal_platform || '', num: s.numbering ? JSON.stringify(s.numbering).replace(/[{}"\[\]]/g, '').slice(0, 40) : '', lat: s.coord ? r5(s.coord.lat) : null, lng: s.coord ? r5(s.coord.lon) : null }
+      : { t: 'm', move: s.move || '', line: s.line_name || (s.transport && s.transport.name) || '', from: hhmm(s.from_time), to: hhmm(s.to_time), min: s.time ?? null, dist: s.distance ?? null,
+          color: s.transport && s.transport.color ? (String(s.transport.color).startsWith('#') ? s.transport.color : '#' + s.transport.color) : null,
+          dest: (s.transport && s.transport.destination && (s.transport.destination.name || s.transport.destination)) || '',
+          getoff: (s.transport && s.transport.getoff) || '', company: (s.transport && s.transport.company && (s.transport.company.name || '')) || '', fare: fareOf(s.transport && s.transport.fare) });
+    return { min: m.time ?? null, dist: m.distance ?? null, walk: m.walk_distance ?? null, transfers: m.transit_count ?? null, fare: fareOf(m.fare),
+      dep: hhmm(it.summary && it.summary.start && it.summary.start.time) || hhmm(m.from_time) || (secs.find(s => s.t === 'm' && s.from) || {}).from || '',
+      arr: hhmm(it.summary && it.summary.goal && it.summary.goal.time) || hhmm(m.to_time) || addMin(([...secs].reverse().find(s => s.t === 'm' && s.to) || {}).to, secs.slice(secs.map(s => s.t === 'm' && !!s.to).lastIndexOf(true) + 1).filter(s => s.t === 'm').reduce((t, s) => t + (s.min || 0), 0)),
+      secs, shapes: shapeLines(it.shapes) };
+  });
+}
