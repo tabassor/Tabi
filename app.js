@@ -3,7 +3,7 @@
 import { CONFIG } from './config.js';
 import { drive, signIn, hasToken, clearToken } from './drive.js';
 import { idb } from './store.js';
-import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate, googleAutocomplete, googlePlace, kindFromGoogle } from './routes.js';
+import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate, googleAutocomplete, googlePlace, kindFromGoogle, googleNearby, osmNearby, kindFromOsmTags } from './routes.js';
 
 /* ================= utilitaires ================= */
 const $ = s => document.querySelector(s);
@@ -35,7 +35,8 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const num = v => typeof v === 'number' && isFinite(v) ? v : null;
 async function pool(list, n, fn){ const q = [...list]; await Promise.all(Array.from({ length: Math.min(n, q.length) }, async () => { while (q.length) await fn(q.shift()); })); }
 
-const KINDS = { visite: 'Visite', resto: 'Restaurant', hotel: 'Hôtel', activite: 'Activité', transport: 'Transport', autre: 'Autre' };
+const KINDS = { visite: 'Visite', temple: 'Temple / sanctuaire', musee: 'Musée', expo: 'Exposition', parc: 'Parc / jardin', vue: 'Point de vue',
+  magasin: 'Magasin', resto: 'Restaurant', cafe: 'Café', onsen: 'Onsen / bain', activite: 'Activité', hotel: 'Hôtel', transport: 'Transport', autre: 'Autre' };
 const kindChip = k => h('span', { class: 'chip k-' + (KINDS[k] ? k : 'autre') }, KINDS[k] || 'Autre');
 
 /* ================= état ================= */
@@ -530,6 +531,7 @@ function updateMap(){
   if (S.view === 'itin'){ updateOverview(); return; }
   const day = currentDay();
   mapTools([
+    h('button', { class: 'btn', type: 'button', onclick: hereNow }, '📍 Ici'),
     h('button', { class: 'btn', type: 'button', onclick: () => startPlacing('Touche la carte pour placer le nouveau lieu', c => openPlaceForm({ day, lat: c.lat, lng: c.lng, coordSource: 'carte' })) }, '＋ Lieu'),
     h('button', { class: 'btn', type: 'button', 'aria-pressed': String(M.showIdeas), onclick: () => { M.showIdeas = !M.showIdeas; LS.set('tabi.ideas', M.showIdeas ? '1' : '0'); M.sig = ''; updateMap(); } }, M.showIdeas ? 'Masquer les idées' : 'Idées')]);
   if (!M.ready || !day) return;
@@ -841,7 +843,8 @@ function viewDay(){
           h('div', { class: 'chip solid' }, done + ' / ' + ps.length + ' tamponnés')),
         bks.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Transports et autres réservations du jour')), ...bks.map(bookingRow)) : null,
         h('div', { class: 'panel' }, list),
-        h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => openPlaceForm({ day }) }, 'Ajouter un lieu'),
+        h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: hereNow, title: 'Ajoute l’endroit où tu te trouves, avec la date et l’heure' }, '📍 Je suis ici'),
+          h('button', { class: 'btn', type: 'button', onclick: () => openPlaceForm({ day }) }, 'Ajouter un lieu'),
           h('button', { class: 'btn', type: 'button', onclick: () => openDayNote(day) }, 'Note ou photos du jour'),
           seq.length > 1 ? h('button', { class: 'btn', type: 'button', onclick: () => prepareDayLegs(day) }, 'Préparer les trajets') : null),
         ps.length > 1 ? h('div', { class: 'muted small' }, 'Pour changer l’ordre, fais glisser un lieu par sa poignée ⋮⋮ : les trajets se recalculent. Touche un trajet pour choisir à pied, transports ou taxi, ou le mode promenade.') : null))
@@ -874,6 +877,7 @@ function stopRow(p, i, from){
       h('div', { class: 'meta' }, kindChip(p.kind),
         linked.length ? h('span', { class: 'chip solid' }, 'Réservé') : null,
         p.addedDuring ? h('span', { class: 'chip warn' }, 'Ajouté en route') : null,
+        p.toIdentify ? h('span', { class: 'chip warn' }, 'À identifier') : null,
         num(p.lat) == null ? h('span', { class: 'chip' }, 'Sans position') : (p.coordSource === 'estime' ? h('span', { class: 'chip', title: 'Position estimée' }, '≈ position') : null),
         np ? h('span', { class: 'muted small' }, np + ' photo' + (np > 1 ? 's' : '')) : null,
         p.tabelogScore ? h('span', { class: 'chip k-resto', title: 'Note Tabelog' }, '食べログ ' + p.tabelogScore) : null,
@@ -1129,6 +1133,7 @@ const bumpNav = () => save({ id: 'navusage', type: 'usage', month: monthKey(), n
 const GSKU = {
   ac:  { label: 'Recherches de lieux', sku: 'Autocomplete Requests', free: 10000, price: 2.83, day: 500 },
   det: { label: 'Fiches lieu ajoutées', sku: 'Place Details Pro', free: 5000, price: 17, day: 100 },
+  near: { label: 'Lieux autour de moi', sku: 'Nearby Search Pro', free: 5000, price: 32, day: null },
   map: { label: 'Chargements de carte', sku: 'Dynamic Maps', free: 10000, price: 7, day: 200 },
   emb: { label: 'Cartes d’itinéraire', sku: 'Maps Embed', free: Infinity, price: 0, day: null } };
 const devId = (() => { let d = LS.get('tabi.dev'); if (!d){ d = uid(); LS.set('tabi.dev', d); } return d; })();
@@ -1352,12 +1357,7 @@ async function prepareDayLegs(day){
 // Type de lieu déduit de la catégorie OpenStreetMap renvoyée par la recherche.
 function kindFromOsm(r){
   const c = r.category || r.class || '', t = r.type || '';
-  if (c === 'tourism' && /hotel|hostel|guest_house|motel|apartment/.test(t)) return 'hotel';
-  if (c === 'amenity' && /restaurant|cafe|fast_food|bar|pub|food_court|ice_cream/.test(t)) return 'resto';
-  if (c === 'railway' || c === 'public_transport' || (c === 'amenity' && /bus_station|ferry_terminal/.test(t)) || c === 'aeroway') return 'transport';
-  if (c === 'leisure' && /water_park|amusement|stadium|sports/.test(t)) return 'activite';
-  if (c === 'tourism' && /theme_park|zoo|aquarium/.test(t)) return 'activite';
-  return 'visite';
+  return kindFromOsmTags({ [c]: t });
 }
 function openPlaceForm(init){
   // l'état du formulaire est gardé ici : il survit aux rafraîchissements de la fiche
@@ -1474,6 +1474,72 @@ function openPlaceForm(init){
 }
 
 /* ---- Lieu : fiche ---- */
+/* ---- « Je suis ici » : pointer l'endroit où l'on se trouve, puis l'associer à un lieu connu ---- */
+function hereNow(){
+  if (!('geolocation' in navigator)){ toast('Ce navigateur ne donne pas la position.'); return; }
+  toast('Recherche de ta position…');
+  navigator.geolocation.getCurrentPosition(async pos => {
+    const at = new Date().toISOString(); const c = pos.coords;
+    const ds = tripDays(); const day = ds.includes(todayIso()) ? todayIso() : currentDay();
+    const pin = { lat: +c.latitude.toFixed(6), lng: +c.longitude.toFixed(6), acc: Math.round(c.accuracy || 0), at };
+    // place le point juste après le dernier lieu déjà tamponné de la journée
+    const list = placesOf(day); let k = -1; list.forEach((x, i) => { if (x.status === 'visited') k = i; });
+    const id = uid();
+    await save({ id, type: 'place', name: 'Arrêt de ' + fmtTime(at), kind: 'visite', day, time: fmtTime(at), lat: pin.lat, lng: pin.lng, coordSource: 'gps', pin,
+      status: 'visited', visitedAt: at, visitedBy: meName(), addedDuring: true, toIdentify: true, order: 0, createdBy: meName(), createdAt: at }, '📍 Point enregistré · ' + fmtTime(at));
+    const ids = list.map(x => x.id); ids.splice(k + 1, 0, id);
+    for (let n = 0; n < ids.length; n++){ const x = S.items.get(ids[n]); if (x && x.order !== n + 1) await save({ id: x.id, order: n + 1 }); }
+    M.sig = ''; renderAll();
+    openIdentify(id);
+  }, e => toast(e.code === 1 ? 'Position refusée : autorise la localisation pour Tabi dans les réglages du téléphone.' : 'Position introuvable pour l’instant, réessaie à découvert.'),
+  { enableHighAccuracy: true, timeout: 20000, maximumAge: 15000 });
+}
+function openIdentify(id){
+  const st = { loading: true, list: [], src: '', err: null, name: '' };
+  const p0 = S.items.get(id); if (!p0) return;
+  const at = p0.pin || { lat: p0.lat, lng: p0.lng, acc: 0 };
+  const radius = Math.max(40, Math.min(150, Math.round((at.acc || 30) * 1.5)));
+  (async () => {
+    if (!S.online){ st.loading = false; st.err = 'Hors ligne : le point est enregistré, tu pourras l’identifier plus tard depuis sa fiche.'; S.sheet && S.sheet.render(); return; }
+    if (gKey()){
+      try { bumpG('near'); st.list = await googleNearby(gKey(), at, radius); st.src = 'Google'; }
+      catch (e){ console.warn('Tabi nearby', e); st.err = e.status === 403 ? 'Google refuse la recherche à proximité (clé) : OpenStreetMap utilisé.' : null; }
+    }
+    if (!st.list.length){
+      try { st.list = await osmNearby(at, radius); st.src = 'OpenStreetMap'; } catch (e){ if (!st.err) st.err = 'Recherche des lieux proches indisponible pour l’instant.'; }
+    }
+    st.loading = false; S.sheet && S.sheet.render();
+  })();
+  const choose = async r => {
+    await save({ id, name: r.name, kind: r.kind || 'visite', address: r.address || null, city: r.city || null, lat: r.lat, lng: r.lng,
+      coordSource: r.src === 'google' ? 'google' : 'osm', googlePlaceId: r.gid || null, mapsUrl: r.mapsUrl || null, toIdentify: false, identifiedAt: new Date().toISOString() }, 'Associé à ' + r.name);
+    S.sheet && S.sheet.close();
+  };
+  openSheet(close => {
+    const p = S.items.get(id); if (!p) return null;
+    return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Où es-tu ?' },
+      sheetHead('Où es-tu ?', close),
+      h('div', { class: 'sec' },
+        h('div', { class: 'small' }, 'Point enregistré à ' + fmtTime(at.at || p.createdAt) + (at.acc ? ' · précision ± ' + at.acc + ' m' : '') + '. Choisis le lieu correspondant pour retrouver plus tard ce que tu as fait.'),
+        st.loading ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), 'Lieux connus dans un rayon de ' + radius + ' m…') : null,
+        st.err ? h('div', { class: 'small warn-t' }, st.err) : null,
+        !st.loading && st.list.length ? h('div', { class: 'results' }, st.list.map(r => h('button', { type: 'button', onclick: () => choose(r) },
+          h('strong', null, r.name), h('span', { class: 'chip k-' + r.kind, style: 'margin-left:6px' }, KINDS[r.kind] || 'Visite'),
+          h('div', { class: 'muted small' }, (r.d != null ? r.d + ' m' : '') + (r.address ? ' · ' + r.address : ''))))) : null,
+        !st.loading && st.list.length ? h('div', { class: 'muted small', style: 'text-align:right' }, 'Résultats ' + st.src) : null,
+        !st.loading && !st.list.length && !st.err ? h('div', { class: 'muted small' }, 'Aucun lieu connu ici.') : null),
+      h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Ou nomme-le toi-même'),
+        h('form', { class: 'row', style: 'flex-wrap:nowrap', onsubmit: async e => { e.preventDefault(); const v = e.currentTarget.querySelector('input').value.trim(); if (!v) return;
+            const k = e.currentTarget.querySelector('select').value;
+            await save({ id, name: v, kind: k, toIdentify: false }, 'Nommé · ' + v); close(); } },
+          h('input', { type: 'text', placeholder: 'Ex. petite rue des lanternes', style: 'flex:1', value: p.toIdentify ? '' : p.name }),
+          h('select', { 'aria-label': 'Catégorie', style: 'width:auto;max-width:120px' }, Object.entries(KINDS).map(([k, l]) => h('option', { value: k, selected: k === p.kind ? true : null }, l))),
+          h('button', { class: 'btn', type: 'submit' }, 'OK'))),
+      h('div', { class: 'sec' }, h('div', { class: 'row' }, h('button', { class: 'btn ghost', type: 'button', onclick: close }, 'Plus tard'),
+        h('span', { class: 'muted small' }, 'Le point reste dans la journée, marqué « À identifier ».'))),
+      h('div', { style: 'height:8px' }));
+  });
+}
 function openPlace(id){
   let confirmDel = false;
   openSheet(close => {
@@ -1486,12 +1552,14 @@ function openPlace(id){
         h('div', { class: 'row' }, kindChip(p.kind), h('span', { class: 'chip' }, p.day ? fmtDay(p.day) : 'Idée'),
           p.status === 'visited' ? h('span', { class: 'chip solid' }, 'Visité' + (p.visitedAt ? ' · ' + fmtDay(isoDay(new Date(p.visitedAt))) + ' ' + fmtTime(p.visitedAt) : '') + (p.visitedBy ? ' · ' + p.visitedBy : '')) : null,
           p.addedDuring ? h('span', { class: 'chip warn' }, 'Ajouté en route') : null),
+        p.pin ? h('div', { class: 'muted small' }, '📍 Pointé sur place le ' + fmtDay(isoDay(new Date(p.pin.at))) + ' à ' + fmtTime(p.pin.at) + (p.pin.acc ? ' · précision ± ' + Math.round(p.pin.acc) + ' m' : '')) : null,
+        p.pin ? h('div', null, h('button', { class: 'btn' + (p.toIdentify ? ' primary' : ''), type: 'button', onclick: () => { close(); openIdentify(id); } }, p.toIdentify ? 'Identifier ce lieu' : 'Changer le lieu associé')) : null,
         p.note ? h('div', { class: 'muted' }, p.note) : null,
         h('div', { class: 'row' },
           h('button', { class: 'btn' + (p.status === 'visited' ? '' : ' primary'), type: 'button', onclick: () => toggleVisit(p) }, p.status === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité'),
           p.status !== 'visited' ? h('button', { class: 'btn', type: 'button', onclick: () => save({ id, status: p.status === 'skipped' ? 'planned' : 'skipped' }) }, p.status === 'skipped' ? 'Remettre au programme' : 'Pas fait') : null,
           h('a', { class: 'btn', href: placeUrl(p), target: '_blank', rel: 'noopener' }, 'Google Maps'),
-          p.kind === 'resto' || p.tabelogUrl ? h('a', { class: 'btn', href: tabelogUrl(p), target: '_blank', rel: 'noopener' }, 'Tabelog' + (p.tabelogScore ? ' · ' + p.tabelogScore : '')) : null,
+          p.kind === 'resto' || p.kind === 'cafe' || p.tabelogUrl ? h('a', { class: 'btn', href: tabelogUrl(p), target: '_blank', rel: 'noopener' }, 'Tabelog' + (p.tabelogScore ? ' · ' + p.tabelogScore : '')) : null,
           num(p.lat) != null && M.eng ? h('button', { class: 'btn', type: 'button', onclick: () => { close(); if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); } M.eng && M.eng.fly(p, 16); M.el.scrollIntoView({ block: 'center' }); } }, 'Voir sur la carte') : null)),
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Photos'),
         photos.length ? thumbs(photos) : h('span', { class: 'muted' }, 'Pas encore de photo.'),
@@ -1519,7 +1587,7 @@ function openPlace(id){
             h('label', { class: 'f' }, 'Ville / quartier', h('input', { type: 'text', name: 'city', id: 'pe-city', value: p.city || '' }))),
           h('label', { class: 'f' }, 'Adresse', h('input', { type: 'text', name: 'address', id: 'pe-address', value: p.address || '' })),
           h('label', { class: 'f' }, 'Note', h('input', { type: 'text', name: 'note', id: 'pe-note', value: p.note || '' })),
-          p.kind === 'resto' || p.tabelogUrl ? h('div', { class: 'grid2' },
+          p.kind === 'resto' || p.kind === 'cafe' || p.tabelogUrl ? h('div', { class: 'grid2' },
             h('label', { class: 'f' }, 'Lien Tabelog', h('input', { type: 'url', name: 'tabelogUrl', id: 'pe-tbl', value: p.tabelogUrl || '', placeholder: 'https://tabelog.com/…' })),
             h('label', { class: 'f' }, 'Note Tabelog', h('input', { type: 'text', name: 'tabelogScore', id: 'pe-tbs', inputmode: 'decimal', value: p.tabelogScore || '', placeholder: '3,65' }))) : null,
           h('label', { class: 'f' }, 'Lien Google Maps ou coordonnées', h('input', { type: 'text', name: 'link', id: 'pe-link', value: p.mapsUrl || '' })),

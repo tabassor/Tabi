@@ -25,7 +25,7 @@ Champs communs : `id` (chaîne unique **tous types confondus** : un lieu et sa r
 | type | champs |
 |---|---|
 | `trip` (id `trip`) | `name`, `start`, `end` (AAAA-MM-JJ) |
-| `place` | `name`, `kind` (visite, resto, hotel, activite, transport, autre), `day` (AAAA-MM-JJ ou null = idée), `order`, `time` (HH:MM), `city`, `address`, `lat`, `lng`, `coordSource` (lien, saisie, carte, osm, estime), `mapsUrl`, `status` (planned, visited, skipped, suggested), `visitedAt`, `visitedBy`, `addedDuring`, `note`, `googlePlaceId`, `tabelogUrl`, `tabelogScore` (texte, ex. « 3,65 ») |
+| `place` | `name`, `kind` (visite, temple, musee, expo, parc, vue, magasin, resto, cafe, onsen, activite, hotel, transport, autre), `day` (AAAA-MM-JJ ou null = idée), `order`, `time` (HH:MM), `city`, `address`, `lat`, `lng`, `coordSource` (lien, saisie, carte, osm, google, gps, estime), `mapsUrl`, `status` (planned, visited, skipped, suggested), `visitedAt`, `visitedBy`, `addedDuring`, `note`, `googlePlaceId`, `tabelogUrl`, `tabelogScore` (texte, ex. « 3,65 »), `pin` (point GPS brut de « Je suis ici » : `lat`, `lng`, `acc` en m, `at` ISO), `toIdentify` (true tant que le point n’est pas associé à un lieu connu), `identifiedAt` |
 | `booking` | `title`, `kind` (hotel, resto, activite, transport, autre), `date`, `time`, `endDate`, `endTime`, `confirmation`, `address`, `city`, `lat`, `lng`, `details`, `cancelled`, `placeId`, `gmailUrl`, `gmailThreadId`, `source` (gmail, manuel) |
 | `note` | `text`, `placeId`, `bookingId`, `day`, `by`, `at` |
 | `media` | `role` (photo, billet), `fileId` (fichier Drive), `placeId`, `bookingId`, `day`, `name`, `mime`, `thumb` (miniature data:URL), `caption`, `by`, `at`, `takenAt` |

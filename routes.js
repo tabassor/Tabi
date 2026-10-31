@@ -286,11 +286,66 @@ export async function googlePlace(key, id, session){
     types: [j.primaryType, ...(j.types || [])].filter(Boolean), mapsUrl: j.googleMapsUri || null,
     city: comp('locality') || comp('sublocality_level_1') || comp('administrative_area_level_2') || comp('administrative_area_level_1') };
 }
+// Catégorie Tabi d'après les types Google : le premier type reconnu (le type principal en tête) l'emporte.
+const GKIND = [
+  [/^(lodging|hotel|hostel|inn|guest_house|ryokan|motel|bed_and_breakfast|resort_hotel|japanese_inn)$/, 'hotel'],
+  [/^(cafe|coffee_shop|tea_house|cat_cafe|dog_cafe)$/, 'cafe'],
+  [/restaurant|^(bar|pub|bakery|food|meal_takeaway|meal_delivery|izakaya|food_court|dessert_shop|confectionery|ice_cream_shop|wine_bar)$/, 'resto'],
+  [/^(museum|history_museum|art_museum|science_museum)$/, 'musee'],
+  [/^(art_gallery|art_studio|exhibition_center|cultural_center|convention_center)$/, 'expo'],
+  [/^(buddhist_temple|shinto_shrine|place_of_worship|church|hindu_temple|mosque|synagogue)$/, 'temple'],
+  [/^(park|garden|botanical_garden|national_park|state_park|city_park|dog_park|hiking_area|zoo|wildlife_park|beach)$/, 'parc'],
+  [/^(observation_deck|scenic_spot|lookout)$/, 'vue'],
+  [/^(onsen|public_bath|spa|sauna)$/, 'onsen'],
+  [/store$|^(shopping_mall|market|supermarket|department_store|book_store|gift_shop|grocery_store|convenience_store|clothing_store|shoe_store|jewelry_store|home_goods_store|asian_grocery_store|flea_market)$/, 'magasin'],
+  [/^(train_station|subway_station|transit_station|bus_station|airport|light_rail_station|ferry_terminal|bus_stop)$/, 'transport'],
+  [/^(amusement_park|amusement_center|aquarium|bowling_alley|karaoke|stadium|water_park|ski_resort|gym|performing_arts_theater|movie_theater|night_club|concert_hall|opera_house|event_venue|video_arcade)$/, 'activite'],
+  [/^(tourist_attraction|historical_landmark|historical_place|monument|castle|plaza|cultural_landmark|sculpture)$/, 'visite'],
+];
 export function kindFromGoogle(types){
-  const t = (types || []).join(' ');
-  if (/lodging|hotel|hostel|inn|guest_house|ryokan/.test(t)) return 'hotel';
-  if (/restaurant|cafe|bar|bakery|food|meal|coffee|ramen|sushi|izakaya|tea_house|dessert|confectionery/.test(t)) return 'resto';
-  if (/train_station|subway_station|transit_station|bus_station|airport|light_rail_station|ferry_terminal/.test(t)) return 'transport';
-  if (/amusement|aquarium|zoo|spa|onsen|bowling|karaoke|stadium|water_park|ski|gym|theater|movie|night_club|escape/.test(t)) return 'activite';
+  for (const t of types || []) for (const [r, k] of GKIND) if (r.test(t)) return k;
   return 'visite';
+}
+
+// Lieux connus autour d'un point (Google Places « Nearby Search », classés par distance).
+export async function googleNearby(key, p, radius){
+  const body = { locationRestriction: { circle: { center: { latitude: p.lat, longitude: p.lng }, radius } }, maxResultCount: 12, rankPreference: 'DISTANCE', languageCode: 'fr' };
+  const j = await gfetch(PLACES + 'places:searchNearby', key, { method: 'POST', body: JSON.stringify(body) },
+    'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,places.googleMapsUri,places.addressComponents');
+  return (j.places || []).map(x => {
+    const comp = t => ((x.addressComponents || []).find(c => (c.types || []).includes(t)) || {}).longText || '';
+    const lat = x.location && x.location.latitude, lng = x.location && x.location.longitude;
+    const types = [x.primaryType, ...(x.types || [])].filter(Boolean);
+    return { src: 'google', gid: x.id, name: (x.displayName && x.displayName.text) || '', address: x.formattedAddress || '', lat, lng, mapsUrl: x.googleMapsUri || null,
+      city: comp('locality') || comp('sublocality_level_1') || comp('administrative_area_level_2') || '', kind: kindFromGoogle(types), d: lat != null ? Math.round(distM(p, { lat, lng })) : null };
+  }).filter(x => x.name);
+}
+// Même chose avec OpenStreetMap (gratuit, sert aussi de secours).
+export function kindFromOsmTags(t){
+  if (/hotel|hostel|guest_house|motel|apartment/.test(t.tourism || '')) return 'hotel';
+  if (/^(cafe)$/.test(t.amenity || '')) return 'cafe';
+  if (/restaurant|fast_food|bar|pub|food_court|ice_cream/.test(t.amenity || '')) return 'resto';
+  if (t.tourism === 'museum') return 'musee';
+  if (t.tourism === 'gallery' || t.amenity === 'arts_centre' || t.amenity === 'exhibition_centre') return 'expo';
+  if (t.amenity === 'place_of_worship') return 'temple';
+  if (/^(park|garden|nature_reserve)$/.test(t.leisure || '') || t.tourism === 'zoo') return 'parc';
+  if (t.tourism === 'viewpoint') return 'vue';
+  if (t.amenity === 'public_bath' || t.leisure === 'sauna' || t.amenity === 'onsen') return 'onsen';
+  if (t.shop || t.amenity === 'marketplace') return 'magasin';
+  if (t.railway || t.public_transport || t.highway === 'bus_stop') return 'transport';
+  if (t.tourism === 'theme_park' || t.tourism === 'aquarium' || /^(amusement_arcade|water_park|stadium)$/.test(t.leisure || '') || /^(theatre|cinema|nightclub)$/.test(t.amenity || '')) return 'activite';
+  return 'visite';
+}
+export async function osmNearby(p, radius){
+  const a = `around:${radius},${p.lat},${p.lng}`;
+  const q = `[out:json][timeout:25];(nwr["name"]["tourism"](${a});nwr["name"]["amenity"~"^(restaurant|cafe|fast_food|bar|pub|place_of_worship|marketplace|arts_centre|public_bath|theatre|cinema)$"](${a});nwr["name"]["shop"](${a});nwr["name"]["leisure"~"^(park|garden)$"](${a});nwr["name"]["historic"](${a}););out center tags 60;`;
+  const j = await overpass(q);
+  const seen = new Set(), out = [];
+  for (const el of j.elements || []){
+    const t = el.tags || {}; const lat = el.lat ?? (el.center && el.center.lat), lng = el.lon ?? (el.center && el.center.lon);
+    const name = nameOf(t); if (lat == null || !name || seen.has(name)) continue; seen.add(name);
+    out.push({ src: 'osm', name, alt: altName(t), lat: +lat.toFixed(6), lng: +lng.toFixed(6), kind: kindFromOsmTags(t), address: [t['addr:street'], t['addr:city']].filter(Boolean).join(', '),
+      city: t['addr:city'] || '', d: Math.round(distM(p, { lat, lng })) });
+  }
+  return out.sort((x, y) => x.d - y.d).slice(0, 12);
 }
