@@ -1161,13 +1161,17 @@ function usagePanel(){
       h('div', { class: 'spread' }, h('span', null, s.label, h('span', { class: 'muted small' }, ' · ' + s.sku)),
         h('span', { class: 'mono small' }, n.toLocaleString('fr-FR') + (isFinite(s.free) ? ' / ' + s.free.toLocaleString('fr-FR') : ' · gratuit'))),
       isFinite(s.free) ? h('div', { class: 'usage-bar' }, h('span', { style: 'width:' + pct.toFixed(1) + '%' + (pct > 80 ? ';background:var(--warn)' : '') })) : null,
-      h('div', { class: 'muted small' }, 'Aujourd’hui : ' + t + (s.day ? ' / ' + s.day + ' (plafond quotidien)' : '')));
+      h('div', { class: 'muted small' }, isFinite(s.free)
+        ? (n < s.free ? 'Reste ' + (s.free - n).toLocaleString('fr-FR') + ' gratuits' : 'Gratuité épuisée : ' + s.price.toString().replace('.', ',') + ' $ les 1 000') + ' · aujourd’hui : ' + t
+        : 'Gratuit sans limite · aujourd’hui : ' + t));
   });
+  const nextMonth = (() => { const [y, m] = monthKey().split('-').map(Number); return (m === 12 ? y + 1 : y) + '-' + String(m === 12 ? 1 : m + 1).padStart(2, '0') + '-01'; })();
   const nav = navUsage();
   rows.push(h('div', { class: 'usage-row' }, h('div', { class: 'spread' }, h('span', null, 'Trajets NAVITIME', h('span', { class: 'muted small' }, ' · RapidAPI')),
     h('span', { class: 'mono small' }, nav + ' / ' + navQuota())), h('div', { class: 'usage-bar' }, h('span', { style: 'width:' + Math.min(100, nav / navQuota() * 100).toFixed(1) + '%' }))));
   return [
-    h('div', { class: 'small' }, 'Ce mois-ci (' + fmtDay(monthKey() + '-01', { month: 'long', year: 'numeric' }) + '), tous appareils confondus.'),
+    h('div', { class: 'small' }, 'Gratuité mensuelle · ' + fmtDay(monthKey() + '-01', { month: 'long', year: 'numeric' }) + ' · tous appareils confondus.'),
+    h('div', { class: 'chip solid', style: 'justify-self:start' }, 'Renouvellement le ' + fmtDay(nextMonth, { weekday: 'long', day: 'numeric', month: 'long' })),
     ...rows,
     h('div', { class: cost > 0 ? 'banner warn' : 'small' }, cost > 0 ? 'Estimation au-delà de la gratuité : environ ' + cost.toFixed(2).replace('.', ',') + ' $ ce mois-ci.' : 'Estimation de facturation : 0 $ (tout reste dans la gratuité mensuelle).'),
     h('div', { class: 'muted small' }, 'Compté par Tabi depuis le 31/10/2026 : c’est une estimation (les recherches suivies d’un ajout peuvent être gratuites, les appels hors Tabi ne sont pas comptés). Les chiffres qui font foi sont dans Google Cloud.'),
