@@ -37,7 +37,12 @@ async function pool(list, n, fn){ const q = [...list]; await Promise.all(Array.f
 
 const KINDS = { visite: 'Visite', temple: 'Temple / sanctuaire', musee: 'Musée', expo: 'Exposition', parc: 'Parc / jardin', vue: 'Point de vue',
   magasin: 'Magasin', resto: 'Restaurant', cafe: 'Café', onsen: 'Onsen / bain', activite: 'Activité', hotel: 'Hôtel', transport: 'Transport', autre: 'Autre' };
-const kindChip = k => h('span', { class: 'chip k-' + (KINDS[k] ? k : 'autre') }, KINDS[k] || 'Autre');
+const kindChip = k => h('span', { class: 'chip k-' + (KINDS[k] || BK[k] ? k : 'autre') }, KINDS[k] || BK[k] || 'Autre');
+// Fin d'année au Japon : du 29/12 au 3/01, beaucoup de musées, jardins, boutiques et restaurants ferment ou changent d'horaires.
+const isNewYear = d => !!d && (d.slice(5) >= '12-29' || d.slice(5) <= '01-03');
+const NY_KINDS = new Set(['visite', 'musee', 'expo', 'parc', 'magasin', 'resto', 'cafe', 'activite']);
+const yen = n => '¥' + Math.round(n).toLocaleString('fr-FR').replace(/ | /g, ' ');
+const money = (n, cur) => !cur || cur === 'JPY' ? yen(n) : n.toLocaleString('fr-FR') + ' ' + cur;
 
 /* ================= état ================= */
 const S = {
@@ -45,8 +50,10 @@ const S = {
   online: navigator.onLine, sync: 'idle', syncErr: null, lastSync: null, pendingCount: 0,
   view: LS.get('tabi.view') || 'jour', day: null, sheet: null, deferred: false,
 };
-const all = t => [...S.items.values()].filter(x => x.type === t);
+// Un élément portant `deleted: true` (pierre tombale) est masqué partout : c'est ainsi que Claude retire un fichier qu'il a créé.
+const all = t => [...S.items.values()].filter(x => x.type === t && !x.deleted);
 const trip = () => S.items.get('trip') || null;
+const live = id => { const x = id && S.items.get(id); return x && !x.deleted ? x : null; };
 const meName = () => S.account ? (S.account.displayName || S.account.emailAddress || '').split(' ')[0] : '';
 
 /* ================= données locales + file d'envoi ================= */
@@ -71,6 +78,7 @@ async function removeItem(id){
   S.items.delete(id); await idb.del('items', id);
   await idb.put('outbox', id, { kind: 'del', id, fileId: it._fileId || null, ts: Date.now() });
   if (it.type === 'media' && it._localBlob){ await idb.del('blobs', id); await idb.del('outbox', 'u:' + id); }
+  if (it.type === 'media') await idb.del('blobs', 'c:' + id);
   await countPending(); schedule(); kick();
 }
 function clean(it){ const o = {}; for (const [k, v] of Object.entries(it)) if (!k.startsWith('_')) o[k] = v; return o; }
@@ -127,6 +135,7 @@ async function flush(){
     }
   } finally { flushing = false; await countPending(); }
 }
+const shadow = new Map(); // fichiers Drive écartés (doublon plus ancien d'un élément) → version lue
 async function pull(){
   const files = await drive.list(S.folders.data);
   const seen = new Set();
@@ -136,7 +145,7 @@ async function pull(){
     if (!/\.json$/i.test(f.name)) continue;
     seen.add(f.id);
     const loc = byFile.get(f.id);
-    if (!loc || loc._version !== String(f.version)) todo.push(f);
+    if (loc ? loc._version !== String(f.version) : shadow.get(f.id) !== String(f.version)) todo.push(f);
   }
   let changed = todo.length > 0;
   const renamed = new Set();
@@ -151,8 +160,15 @@ async function pull(){
     try {
       const obj = await drive.readJson(f.id);
       if (!obj || typeof obj.id !== 'string' || typeof obj.type !== 'string') return;
-      let it = { ...obj, _fileId: f.id, _version: String(f.version), _by: (f.lastModifyingUser && f.lastModifyingUser.displayName) || '' };
+      let it = { ...obj, _fileId: f.id, _version: String(f.version), _mtime: f.modifiedTime || '', _by: (f.lastModifyingUser && f.lastModifyingUser.displayName) || '' };
       const loc = S.items.get(it.id);
+      // Deux fichiers pour le même élément (même id, même type) : le plus récent gagne (updatedAt, puis date Drive),
+      // l'autre est mis de côté. C'est ce qui permet à Claude de corriger ou retirer un élément en déposant un nouveau fichier.
+      if (loc && loc.type === it.type && loc._fileId && loc._fileId !== f.id && seen.has(loc._fileId)){
+        const newer = (it.updatedAt || '') > (loc.updatedAt || '') || ((it.updatedAt || '') === (loc.updatedAt || '') && it._mtime > (loc._mtime || ''));
+        if (!newer || loc._pending){ shadow.set(f.id, String(f.version)); return; }
+        shadow.set(loc._fileId, loc._version);
+      }
       if (loc && loc.type !== it.type && loc._fileId !== f.id){
         if (it.type === 'place' && loc.type !== 'place'){ const m = rekey(loc); await store(m); renamed.add(m.id); }
         else { it = rekey(it); renamed.add(it.id); }
@@ -164,10 +180,38 @@ async function pull(){
   });
   // l'id corrigé est réécrit dans le fichier, pour que tous les appareils le voient
   for (const id of renamed) if (S.items.has(id)) await save({ id });
+  let gone = false;
   for (const it of [...S.items.values()]){
-    if (it._fileId && !seen.has(it._fileId) && !it._pending){ S.items.delete(it.id); await idb.del('items', it.id); changed = true; }
+    if (it._fileId && !seen.has(it._fileId) && !it._pending){ S.items.delete(it.id); await idb.del('items', it.id); changed = true; gone = true; }
   }
+  // un fichier gagnant a disparu : les fichiers mis de côté seront relus à la prochaine synchronisation
+  if (gone) shadow.clear();
+  for (const k of [...shadow.keys()]) if (!seen.has(k)) shadow.delete(k);
   return changed;
+}
+// Le README du dossier Drive est le contrat lu par Claude. Sa référence est drive-readme.md dans ce dépôt :
+// l'appli le recopie dans le Drive quand sa version (« <!-- tabi-readme vN --> ») est plus récente.
+let readmeDone = false;
+const readmeVer = t => { const m = /<!--\s*tabi-readme v(\d+)\s*-->/.exec(t || ''); return m ? +m[1] : 0; };
+async function syncReadme(){
+  if (readmeDone) return; readmeDone = true;
+  try {
+    const r = await fetch('drive-readme.md', { cache: 'no-cache' }); if (!r.ok) return;
+    const text = await r.text(); const v = readmeVer(text); if (!v) return;
+    const f = await drive.child(S.folders.root, 'README.md');
+    if (!f){ await drive.createText(S.folders.root, 'README.md', text); return; }
+    if (readmeVer(await drive.readText(f.id)) < v) await drive.updateText(f.id, text);
+  } catch (e){ readmeDone = false; console.warn('Tabi README', e); }
+}
+// Les billets sont gardés sur l'appareil pour être présentés sans réseau.
+let ticketsT = 0;
+async function cacheTickets(){
+  if (Date.now() - ticketsT < 10 * 60e3) return; ticketsT = Date.now();
+  const list = all('media').filter(m => m.role === 'billet' && m.fileId && !m._localBlob);
+  await pool(list, 2, async m => {
+    if (await idb.get('blobs', 'c:' + m.id)) return;
+    try { const blob = await drive.blob(m.fileId); await idb.put('blobs', 'c:' + m.id, { blob, mime: m.mime, cached: true }); } catch (e){ if (e.code === 'auth' || e.code === 'network') throw e; }
+  });
 }
 let syncing = false;
 async function syncNow(){
@@ -180,6 +224,7 @@ async function syncNow(){
     const changed = await pull();
     S.sync = 'ok'; S.lastSync = new Date().toISOString(); await idb.put('meta', 'lastSync', S.lastSync);
     if (changed) schedule();
+    syncReadme(); cacheTickets().catch(() => {});
   } catch (e){
     S.sync = 'error'; S.syncErr = e.code === 'noaccess' ? e.message : e.code === 'auth' ? null : e.code === 'network' ? 'Réseau indisponible.' : ('Synchronisation interrompue : ' + (e.message || e.code));
     if (e.code === 'network') S.online = false;
@@ -271,7 +316,7 @@ function renderAll(){
   const main = $('#main');
   if (typingIn(main) || typingIn($('#sheetRoot'))){ S.deferred = true; return; }
   const y = window.scrollY;
-  main.replaceChildren(...renderMain());
+  main.replaceChildren(...renderMain().flat(Infinity).filter(x => x != null && x !== false));
   if (S.view === 'jour' || S.view === 'itin') updateMap();
   if (S.sheet) S.sheet.render();
   window.scrollTo(0, y);
@@ -289,12 +334,30 @@ const mediaOf = (f, id, role) => all('media').filter(m => m[f] === id && (!role 
 const nextOrder = day => { const l = placesOf(day); return (l.length ? Math.max(...l.map(p => p.order ?? 0)) : 0) + 1; };
 const duringTrip = day => { const t = trip(); const td = todayIso(); return !!(day && t && td >= t.start && td <= t.end && day <= td); };
 
+/* ---- à suivre : tâches, échéances, sommes à régler sur place (champs todos, deadlines, toPay des réservations) ---- */
+const liveBookings = () => bookings().filter(b => !b.cancelled);
+const todoItems = () => liveBookings().flatMap(b => (Array.isArray(b.todos) ? b.todos : []).map((t, i) => ({ b, t: typeof t === 'string' ? { text: t } : t, i })))
+  .filter(x => x.t && x.t.text && !x.t.done);
+const deadlineItems = () => liveBookings().flatMap(b => (Array.isArray(b.deadlines) ? b.deadlines : []).map((d, i) => ({ b, d, i })))
+  .filter(x => x.d && x.d.date && !x.d.done).sort((x, y) => (x.d.date + (x.d.time || '')).localeCompare(y.d.date + (y.d.time || '')));
+const payItems = () => liveBookings().flatMap(b => (Array.isArray(b.toPay) ? b.toPay : []).map((p, i) => ({ b, p, i, date: (p && p.date) || b.date })))
+  .filter(x => x.p && num(x.p.amount) != null && !x.p.paid);
+const payOf = day => payItems().filter(x => x.date === day);
+function payTotal(list){ const t = {}; list.forEach(x => { const c = x.p.currency || 'JPY'; t[c] = (t[c] || 0) + x.p.amount; }); return Object.entries(t).map(([c, n]) => money(n, c)).join(' + '); }
+const checkinItems = () => liveBookings().filter(b => b.kind === 'hotel' && b.date && (b.checkinUntil || b.time));
+// nombre d'éléments qui demandent une action : tâches ouvertes + échéances des 14 prochains jours
+function attentionCount(){ const lim = addDays(todayIso(), 14); return todoItems().length + deadlineItems().filter(x => x.d.date <= lim).length; }
+async function setSub(b, field, i, patch, msg){
+  const arr = (Array.isArray(b[field]) ? b[field] : []).map(x => typeof x === 'string' ? { text: x } : { ...x });
+  if (!arr[i]) return; arr[i] = { ...arr[i], ...patch }; await save({ id: b.id, [field]: arr }, msg);
+}
+
 function hotelStays(){
   return bookings().filter(b => b.kind === 'hotel' && b.date && !b.cancelled)
     .map(b => ({ b, from: b.date, to: b.endDate && b.endDate > b.date ? b.endDate : addDays(b.date, 1), guessed: !(b.endDate && b.endDate > b.date) }));
 }
 function hotelAnchor(st){
-  const b = st.b, p = b.placeId && S.items.get(b.placeId);
+  const b = st.b, p = live(b.placeId);
   return { anchor: true, id: p ? p.id : null, bookingId: b.id, name: b.title, kind: 'hotel', guessed: st.guessed,
     lat: p && num(p.lat) != null ? p.lat : num(b.lat), lng: p && num(p.lng) != null ? p.lng : num(b.lng),
     coordSource: p && num(p.lat) != null ? p.coordSource : (num(b.lat) != null ? 'estime' : null),
@@ -313,12 +376,12 @@ function dayModel(day){
   return { A, ps };
 }
 // Réservations qui sont des étapes de la journée (rendez-vous, restaurant, activité) : tout sauf hôtel, transport et annulées.
-const inRoute = b => b.kind !== 'hotel' && b.kind !== 'transport' && !b.cancelled;
+const inRoute = b => b.kind !== 'hotel' && b.kind !== 'transport' && b.kind !== 'bagages' && !b.cancelled;
 // Étapes tirées des réservations du jour qui ne sont pas déjà représentées par leur lieu dans la journée.
 function dayEvents(day, ps){
   const ids = new Set(ps.map(p => p.id));
   return bookingsOf(day).filter(b => inRoute(b) && !(b.placeId && ids.has(b.placeId))).map(b => {
-    const p = b.placeId && S.items.get(b.placeId); const pp = p && num(p.lat) != null && num(p.lng) != null;
+    const p = live(b.placeId); const pp = p && num(p.lat) != null && num(p.lng) != null;
     const lat = pp ? p.lat : num(b.lat), lng = pp ? p.lng : num(b.lng);
     return { ev: true, id: null, bookingId: b.id, name: b.title, kind: b.kind, time: b.time || null, lat, lng,
       coordSource: pp ? p.coordSource : (lat != null ? 'estime' : null), address: (p && p.address) || b.address || null, city: (p && p.city) || b.city || null,
@@ -681,7 +744,8 @@ const ICONS = {
 };
 function renderTabs(){
   const nS = all('place').filter(p => p.status === 'suggested').length;
-  const tabs = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', 'Résas'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', nS ? 'Claude · ' + nS : 'Claude']];
+  const nA = S.account && trip() ? attentionCount() : 0;
+  const tabs = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', nA ? 'Résas · ' + nA : 'Résas'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', nS ? 'Claude · ' + nS : 'Claude']];
   $('#tabs').replaceChildren(...tabs.map(([k, l]) => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true');
@@ -735,7 +799,7 @@ function viewItin(){
     const done = ps.filter(p => p.status === 'visited').length;
     const night = A.end ? A.end.name : null;
     const moving = A.start && A.end && A.start.bookingId !== A.end.bookingId;
-    const np = all('media').filter(m => m.role === 'photo' && (m.day === d || (m.placeId && ps.some(p => p.id === m.placeId)))).length;
+    const np = all('media').filter(m => m.role === 'photo' && (m.day === d || (m.placeId && ps.some(p => p.id === m.placeId)) || (m.bookingId && bookingsOf(d).some(b => b.id === m.bookingId)))).length;
     return h('button', { class: 'itin-day' + (d === td ? ' today' : ''), type: 'button', onclick: () => goDay(d), 'aria-label': 'Ouvrir la journée du ' + fmtDay(d, { weekday: 'long', day: 'numeric', month: 'long' }) },
       h('span', { class: 'itin-bar', style: 'background:' + dayColor(i) }),
       h('div', { class: 'itin-body' },
@@ -746,6 +810,7 @@ function viewItin(){
         stops.length ? h('ol', { class: 'itin-places' }, stops.map(p => h('li', { class: p.status === 'visited' ? 'v' : p.status === 'skipped' ? 's' : '' },
           p.time ? h('span', { class: 'mono muted' }, p.time + ' ') : null, p.name))) : h('div', { class: 'muted small' }, 'Journée libre, rien de prévu.'),
         bks.length ? h('div', { class: 'small muted' }, bks.map(b => (b.time ? b.time + ' ' : '') + b.title).join(' · ')) : null,
+        payOf(d).length ? h('div', { class: 'small' }, h('span', { class: 'mono' }, payTotal(payOf(d))), h('span', { class: 'muted' }, ' à régler sur place')) : null,
         h('div', { class: 'row small muted' },
           moving ? h('span', null, '→ changement d’hôtel : ' + A.end.name) : night ? h('span', null, 'Nuit : ' + night) : (d !== ds[ds.length - 1] ? h('span', { class: 'warn-t' }, 'Pas d’hôtel pour cette nuit') : null),
           np ? h('span', null, '· ' + np + ' photo' + (np > 1 ? 's' : '')) : null)),
@@ -841,6 +906,8 @@ function viewDay(){
         h('div', { class: 'spread' },
           h('div', null, h('div', { class: 'eyebrow', style: 'color:' + col }, 'Jour ' + (idx + 1) + ' sur ' + tripDays().length), h('h2', null, fmtDay(day, { weekday: 'long', day: 'numeric', month: 'long' }))),
           h('div', { class: 'chip solid' }, done + ' / ' + ps.length + ' tamponnés')),
+        payOf(day).length ? h('div', { class: 'banner' }, h('b', null, 'À régler sur place : ' + payTotal(payOf(day))), ' · ', payOf(day).map(x => x.p.label || x.b.title).join(', ')) : null,
+        isNewYear(day) && stops.some(p => NY_KINDS.has(p.kind) && !p.ev) ? h('div', { class: 'banner warn' }, 'Période du Nouvel An : beaucoup de musées, jardins, boutiques et restaurants ferment ou réduisent leurs horaires entre le 29 décembre et le 3 janvier. Vérifie les lieux marqués « Nouvel An ».') : null,
         bks.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Transports et autres réservations du jour')), ...bks.map(bookingRow)) : null,
         h('div', { class: 'panel' }, list),
         h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: hereNow, title: 'Ajoute l’endroit où tu te trouves, avec la date et l’heure' }, '📍 Je suis ici'),
@@ -876,6 +943,7 @@ function stopRow(p, i, from){
       h('div', { class: 'name' }, p.time ? h('span', { class: 'mono muted', style: 'font-weight:600;margin-right:6px' }, p.time) : null, p.name),
       h('div', { class: 'meta' }, kindChip(p.kind),
         linked.length ? h('span', { class: 'chip solid' }, 'Réservé') : null,
+        isNewYear(p.day) && NY_KINDS.has(p.kind) && !linked.length ? h('span', { class: 'chip warn', title: 'Fermetures fréquentes du 29/12 au 3/01 : vérifie les horaires' }, 'Nouvel An') : null,
         p.addedDuring ? h('span', { class: 'chip warn' }, 'Ajouté en route') : null,
         p.toIdentify ? h('span', { class: 'chip warn' }, 'À identifier') : null,
         num(p.lat) == null ? h('span', { class: 'chip' }, 'Sans position') : (p.coordSource === 'estime' ? h('span', { class: 'chip', title: 'Position estimée' }, '≈ position') : null),
@@ -894,6 +962,7 @@ function eventRow(e, i, from){
     h('div', { class: 'body', onclick: open, role: 'button', tabindex: '0', onkeydown: k => { if (k.key === 'Enter') open(); } },
       h('div', { class: 'name' }, e.time ? h('span', { class: 'mono muted', style: 'font-weight:600;margin-right:6px' }, e.time) : null, e.name),
       h('div', { class: 'meta' }, kindChip(e.kind), h('span', { class: 'chip solid' }, 'Réservé'),
+        (n => n ? h('span', { class: 'muted small' }, n + ' photo' + (n > 1 ? 's' : '')) : null)(mediaOf('bookingId', e.bookingId, 'photo').length),
         num(e.lat) == null ? h('span', { class: 'chip', title: 'Ajoute une adresse ou crée le lieu depuis la réservation' }, 'Sans position') : (e.coordSource === 'estime' ? h('span', { class: 'chip', title: 'Position estimée' }, '≈ position') : null))),
     from && hasPos(from) && hasPos(e) ? h('a', { class: 'btn ghost', href: legUrlFor(from, e), target: '_blank', rel: 'noopener', 'aria-label': 'Google Maps vers ' + e.name }, 'Y aller')
       : (hasPos(e) || e.address ? h('a', { class: 'btn ghost', href: placeUrl(e), target: '_blank', rel: 'noopener' }, 'Maps') : h('span')));
@@ -1543,7 +1612,7 @@ function openIdentify(id){
 function openPlace(id){
   let confirmDel = false;
   openSheet(close => {
-    const p = S.items.get(id); if (!p) return null;
+    const p = live(id); if (!p) return null;
     const notes = notesOf('placeId', id), photos = mediaOf('placeId', id, 'photo'), linked = bookings().filter(b => b.placeId === id);
     const list = placesOf(p.day || null); const pos = list.findIndex(x => x.id === id);
     return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': p.name },
@@ -1555,10 +1624,12 @@ function openPlace(id){
         p.pin ? h('div', { class: 'muted small' }, '📍 Pointé sur place le ' + fmtDay(isoDay(new Date(p.pin.at))) + ' à ' + fmtTime(p.pin.at) + (p.pin.acc ? ' · précision ± ' + Math.round(p.pin.acc) + ' m' : '')) : null,
         p.pin ? h('div', null, h('button', { class: 'btn' + (p.toIdentify ? ' primary' : ''), type: 'button', onclick: () => { close(); openIdentify(id); } }, p.toIdentify ? 'Identifier ce lieu' : 'Changer le lieu associé')) : null,
         p.note ? h('div', { class: 'muted' }, p.note) : null,
+        isNewYear(p.day) && NY_KINDS.has(p.kind) && !linked.length ? h('div', { class: 'banner warn small' }, 'Nouvel An : beaucoup de lieux ferment ou réduisent leurs horaires du 29/12 au 3/01. Vérifie avant d’y aller.') : null,
         h('div', { class: 'row' },
           h('button', { class: 'btn' + (p.status === 'visited' ? '' : ' primary'), type: 'button', onclick: () => toggleVisit(p) }, p.status === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité'),
           p.status !== 'visited' ? h('button', { class: 'btn', type: 'button', onclick: () => save({ id, status: p.status === 'skipped' ? 'planned' : 'skipped' }) }, p.status === 'skipped' ? 'Remettre au programme' : 'Pas fait') : null,
           h('a', { class: 'btn', href: placeUrl(p), target: '_blank', rel: 'noopener' }, 'Google Maps'),
+          addrButton(addrInfo(p, linked[0])),
           p.kind === 'resto' || p.kind === 'cafe' || p.tabelogUrl ? h('a', { class: 'btn', href: tabelogUrl(p), target: '_blank', rel: 'noopener' }, 'Tabelog' + (p.tabelogScore ? ' · ' + p.tabelogScore : '')) : null,
           num(p.lat) != null && M.eng ? h('button', { class: 'btn', type: 'button', onclick: () => { close(); if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); } M.eng && M.eng.fly(p, 16); M.el.scrollIntoView({ block: 'center' }); } }, 'Voir sur la carte') : null)),
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Photos'),
@@ -1570,7 +1641,8 @@ function openPlace(id){
       h('details', { class: 'sec' }, h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Modifier'),
         (() => { const f = h('form', { class: 'form', style: 'padding:0', onsubmit: async e => {
           e.preventDefault(); const fd = new FormData(f); const link = String(fd.get('link') || '').trim(); const c = parseCoords(link);
-          const upd = { id, name: String(fd.get('name')).trim() || p.name, kind: fd.get('kind'), time: fd.get('time') || null, city: String(fd.get('city') || '').trim() || null, address: String(fd.get('address') || '').trim() || null, note: String(fd.get('note') || '').trim() || null };
+          const upd = { id, name: String(fd.get('name')).trim() || p.name, kind: fd.get('kind'), time: fd.get('time') || null, city: String(fd.get('city') || '').trim() || null, address: String(fd.get('address') || '').trim() || null, note: String(fd.get('note') || '').trim() || null,
+            nameJa: String(fd.get('nameJa') || '').trim() || null, addressJa: String(fd.get('addressJa') || '').trim() || null, phone: String(fd.get('phone') || '').trim() || null };
           if (fd.has('tabelogUrl')){ upd.tabelogUrl = String(fd.get('tabelogUrl') || '').trim() || null; upd.tabelogScore = String(fd.get('tabelogScore') || '').trim().replace('.', ',') || null; }
           if (link !== (p.mapsUrl || '')){ upd.mapsUrl = /^https?:\/\//.test(link) ? link : null; if (c){ upd.lat = c.lat; upd.lng = c.lng; upd.coordSource = /^https?:/.test(link) ? 'lien' : 'saisie'; } }
           const nd = fd.get('day') || null; if (nd !== (p.day || null)){ upd.day = nd; upd.order = nextOrder(nd); }
@@ -1586,6 +1658,10 @@ function openPlace(id){
             h('label', { class: 'f' }, 'Heure', h('input', { type: 'time', name: 'time', id: 'pe-time', value: p.time || '' })),
             h('label', { class: 'f' }, 'Ville / quartier', h('input', { type: 'text', name: 'city', id: 'pe-city', value: p.city || '' }))),
           h('label', { class: 'f' }, 'Adresse', h('input', { type: 'text', name: 'address', id: 'pe-address', value: p.address || '' })),
+          h('label', { class: 'f' }, 'Adresse en japonais (pour la carte à montrer)', h('input', { type: 'text', name: 'addressJa', id: 'pe-addrja', lang: 'ja', value: p.addressJa || '', placeholder: '〒… 都道府県 市区町村 番地' })),
+          h('div', { class: 'grid2' },
+            h('label', { class: 'f' }, 'Nom en japonais', h('input', { type: 'text', name: 'nameJa', id: 'pe-nameja', lang: 'ja', value: p.nameJa || '' })),
+            h('label', { class: 'f' }, 'Téléphone', h('input', { type: 'tel', name: 'phone', id: 'pe-phone', value: p.phone || '' }))),
           h('label', { class: 'f' }, 'Note', h('input', { type: 'text', name: 'note', id: 'pe-note', value: p.note || '' })),
           p.kind === 'resto' || p.kind === 'cafe' || p.tabelogUrl ? h('div', { class: 'grid2' },
             h('label', { class: 'f' }, 'Lien Tabelog', h('input', { type: 'url', name: 'tabelogUrl', id: 'pe-tbl', value: p.tabelogUrl || '', placeholder: 'https://tabelog.com/…' })),
@@ -1621,7 +1697,10 @@ async function mediaUrl(m, full){
   const key = m.id + (full ? ':f' : ':t'); if (urlCache.has(key)) return urlCache.get(key);
   let blob = null;
   if (m._localBlob){ const r = await idb.get('blobs', m.id); blob = r && r.blob; }
-  else if (m.fileId && hasToken()) blob = await drive.blob(m.fileId);
+  else {
+    const c = full && await idb.get('blobs', 'c:' + m.id); if (c) blob = c.blob;
+    else if (m.fileId && hasToken() && S.online) blob = await drive.blob(m.fileId).catch(() => null);
+  }
   if (!blob) return null;
   const u = URL.createObjectURL(blob); urlCache.set(key, u); return u;
 }
@@ -1635,11 +1714,12 @@ function thumbs(list){
 function uploadButton(label, accept, link, multiple){
   const inp = h('input', { type: 'file', accept, multiple: multiple ? true : null, hidden: true, onchange: async () => {
     const files = [...inp.files]; inp.value = ''; if (!files.length) return;
-    btn.disabled = true; let n = 0;
+    btn.disabled = true; let n = 0, auto = 0;
     for (const file of files){
       btn.textContent = 'Préparation ' + (++n) + '/' + files.length + '…';
       try {
         const isImg = file.type.startsWith('image/') && !/gif|svg/.test(file.type);
+        const ex = link.role === 'photo' && isImg ? await readExif(file) : {};
         const blob = isImg ? await resize(file, 2560, 0.86) : file;
         const thumb = isImg ? await thumbData(blob) : null;
         const id = uid(); const mime = blob.type || file.type || 'application/octet-stream';
@@ -1647,17 +1727,80 @@ function uploadButton(label, accept, link, multiple){
         const base = (file.name.replace(/\.[^.]+$/, '') || 'fichier').replace(/[^\w\-. ]+/g, '').slice(0, 60);
         await idb.put('blobs', id, { blob, name: `${link.role}_${id}_${base}.${ext}`, mime, folder: link.role === 'billet' ? 'billets' : 'photos' });
         const it = { id, type: 'media', role: link.role, placeId: link.placeId || null, bookingId: link.bookingId || null, day: link.day || null,
-          name: file.name, mime, thumb, by: meName(), at: new Date().toISOString(), takenAt: file.lastModified ? new Date(file.lastModified).toISOString() : null, fileId: null, _localBlob: true, _pending: true };
+          name: file.name, mime, thumb, by: meName(), at: new Date().toISOString(),
+          takenAt: ex.takenLocal ? new Date(ex.takenLocal).toISOString() : file.lastModified ? new Date(file.lastModified).toISOString() : null,
+          takenLocal: ex.takenLocal || null, gps: ex.gps || null, fileId: null, _localBlob: true, _pending: true };
+        // photo du jour sans étape : rattachée automatiquement à l'étape toute proche si la photo porte sa position GPS
+        if (link.role === 'photo' && !it.placeId && !it.bookingId){
+          if (!it.day && ex.takenLocal && tripDays().includes(ex.takenLocal.slice(0, 10))) it.day = ex.takenLocal.slice(0, 10);
+          const g = guessTarget(it, it.day); if (g){ Object.assign(it, linkOfKey(g.key)); it.linkedBy = 'gps'; auto++; }
+        }
         S.items.set(id, it); await idb.put('items', id, it);
         await idb.put('outbox', 'u:' + id, { kind: 'upload', id, ts: Date.now() });
       } catch (e){ console.warn(e); toast('Impossible de préparer ' + file.name + '.'); }
     }
     await countPending(); btn.disabled = false; btn.textContent = label;
-    toast(files.length > 1 ? files.length + ' fichiers ajoutés' : 'Fichier ajouté'); schedule(); kick(300);
+    toast((files.length > 1 ? files.length + ' fichiers ajoutés' : 'Fichier ajouté') + (auto ? ' · ' + auto + ' rattachée' + (auto > 1 ? 's' : '') + ' à son étape par la position GPS' : '')); schedule(); kick(300);
   } });
   const btn = h('button', { class: 'btn', type: 'button', onclick: () => inp.click() }, label);
   return h('div', null, inp, btn);
 }
+// EXIF d'une photo JPEG : heure de prise de vue (DateTimeOriginal, heure locale de l'appareil) et position GPS si présentes.
+// À lire sur le fichier d'origine : la réduction de taille (canvas) efface ces informations.
+async function readExif(file){
+  try {
+    if (!/jpe?g/i.test(file.type) && !/\.jpe?g$/i.test(file.name)) return {};
+    const v = new DataView(await file.slice(0, 196608).arrayBuffer());
+    if (v.getUint16(0) !== 0xFFD8) return {};
+    let o = 2;
+    while (o + 4 < v.byteLength){
+      const mk = v.getUint16(o), len = v.getUint16(o + 2);
+      if (mk === 0xFFE1 && v.getUint32(o + 4) === 0x45786966){ // « Exif »
+        const t = o + 10, le = v.getUint16(t) === 0x4949;
+        const u16 = p => v.getUint16(t + p, le), u32 = p => v.getUint32(t + p, le);
+        const ifd = p => { const n = u16(p), out = {}; for (let i = 0; i < n; i++){ const e = p + 2 + i * 12; out[u16(e)] = { type: u16(e + 2), count: u32(e + 4), off: e + 8 }; } return out; };
+        const str = en => { const p = en.count > 4 ? u32(en.off) : en.off; let s = ''; for (let i = 0; i < en.count - 1; i++) s += String.fromCharCode(v.getUint8(t + p + i)); return s; };
+        const rat = (en, k) => { const p = u32(en.off) + k * 8; const d = u32(p + 4); return d ? u32(p) / d : 0; };
+        const dms = en => rat(en, 0) + rat(en, 1) / 60 + rat(en, 2) / 3600;
+        const ifd0 = ifd(u32(4)); const out = {};
+        if (ifd0[0x8769]){ const ex = ifd(u32(ifd0[0x8769].off)); const dt = ex[0x9003] || ex[0x9004]; if (dt){ const s = str(dt); const m = /^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d)/.exec(s); if (m) out.takenLocal = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}`; } }
+        if (ifd0[0x8825]){ const g = ifd(u32(ifd0[0x8825].off));
+          if (g[2] && g[4]){ let lat = dms(g[2]), lng = dms(g[4]); if (g[1] && str(g[1]) === 'S') lat = -lat; if (g[3] && str(g[3]) === 'W') lng = -lng; if (lat || lng) out.gps = { lat: +lat.toFixed(6), lng: +lng.toFixed(6) }; } }
+        return out;
+      }
+      if ((mk & 0xFF00) !== 0xFF00) break;
+      o += 2 + len;
+    }
+  } catch {}
+  return {};
+}
+// Étapes d'une journée auxquelles rattacher une photo : lieux, rendez-vous issus des réservations, hôtels.
+function photoTargets(day){
+  if (!day) return [];
+  const out = [], seen = new Set();
+  for (const p of daySeq(day).seq){
+    const key = p.anchor ? (p.id ? 'p:' + p.id : 'b:' + p.bookingId) : p.ev ? 'b:' + p.bookingId : 'p:' + p.id;
+    if (seen.has(key)) continue; seen.add(key);
+    out.push({ key, label: (p.anchor ? 'Hôtel · ' : p.time ? p.time + ' · ' : '') + p.name, lat: num(p.lat), lng: num(p.lng), visitedAt: p.visitedAt || null, time: p.time || null, estimated: p.coordSource === 'estime' });
+  }
+  return out;
+}
+// Étape la plus probable : par la position GPS de la photo (à moins de 250 m, position du lieu non estimée), sinon null.
+function guessTarget(m, day){
+  if (!m.gps) return null;
+  let best = null;
+  for (const t of photoTargets(day)){ if (t.lat == null || t.estimated) continue; const d = dist(m.gps, t); if (d < 250 && (!best || d < best.d)) best = { ...t, d }; }
+  return best;
+}
+// Étape suggérée par l'heure : le dernier lieu tamponné avant la prise de vue (dans les 3 heures).
+function timeTarget(m, day){
+  const at = m.takenLocal ? new Date(m.takenLocal) : m.takenAt ? new Date(m.takenAt) : null; if (!at || isNaN(at)) return null;
+  let best = null;
+  for (const t of photoTargets(day)){ if (!t.visitedAt) continue; const v = new Date(t.visitedAt); const dt = at - v; if (dt >= -15 * 60e3 && dt < 3 * 3600e3 && (!best || v > new Date(best.visitedAt))) best = t; }
+  return best;
+}
+const linkOfKey = key => key && key.startsWith('p:') ? { placeId: key.slice(2), bookingId: null } : key && key.startsWith('b:') ? { placeId: null, bookingId: key.slice(2) } : { placeId: null, bookingId: null };
+const keyOf = m => m.placeId ? 'p:' + m.placeId : m.bookingId ? 'b:' + m.bookingId : '';
 function loadImg(blob){ return new Promise((res, rej) => { const u = URL.createObjectURL(blob); const i = new Image(); i.onload = () => { res(i); URL.revokeObjectURL(u); }; i.onerror = () => { URL.revokeObjectURL(u); rej(new Error('image')); }; i.src = u; }); }
 async function resize(file, max, q){
   try { const img = await loadImg(file); const s = Math.min(1, max / Math.max(img.width, img.height)); const w = Math.round(img.width * s), hh = Math.round(img.height * s);
@@ -1678,6 +1821,7 @@ function openPhoto(id){
       sheetHead(m.caption || (m.role === 'billet' ? 'Billet' : 'Photo'), close),
       h('div', { class: 'sec' }, img,
         h('div', { class: 'muted small' }, 'Ajoutée par ' + (m.by || '?') + (m.takenAt ? ' · ' + fmtDay(isoDay(new Date(m.takenAt))) + ' ' + fmtTime(m.takenAt) : '') + (m._localBlob ? ' · en attente d’envoi' : '')),
+        m.role === 'photo' ? photoLinker(m) : null,
         (() => { const f = h('form', { class: 'row', style: 'flex-wrap:nowrap', onsubmit: async e => { e.preventDefault(); const v = f.querySelector('input').value.trim(); f.querySelector('input').blur(); await save({ id, caption: v || null }, 'Légende enregistrée'); } },
           h('input', { type: 'text', id: 'cap-' + id, value: m.caption || '', placeholder: 'Légende', style: 'flex:1' }), h('button', { class: 'btn', type: 'submit' }, 'OK')); return f; })(),
         h('div', { class: 'row' },
@@ -1686,16 +1830,98 @@ function openPhoto(id){
             : h('button', { class: 'btn danger', type: 'button', onclick: () => { confirmDel = true; S.sheet.render(); } }, 'Supprimer'))));
   });
 }
+// Rattacher une photo à une étape de la journée (lieu, rendez-vous, hôtel) ou la laisser au journal du jour.
+function photoLinker(m){
+  const p0 = live(m.placeId), b0 = live(m.bookingId);
+  const day = m.day || (p0 && p0.day) || (b0 && b0.date) || (m.takenLocal && tripDays().includes(m.takenLocal.slice(0, 10)) ? m.takenLocal.slice(0, 10) : null);
+  const targets = photoTargets(day); const cur = keyOf(m);
+  if (cur && !targets.some(t => t.key === cur)) targets.unshift({ key: cur, label: (p0 && p0.name) || (b0 && b0.title) || 'Étape' });
+  const sugg = !cur ? (guessTarget(m, day) || timeTarget(m, day)) : null;
+  const setLink = (key, d) => save({ id: m.id, ...linkOfKey(key), day: d !== undefined ? d : day, linkedBy: key ? 'main' : null }, key ? 'Photo rattachée' : 'Photo laissée au journal du jour');
+  return h('div', { class: 'linker' },
+    h('div', { class: 'grid2' },
+      h('label', { class: 'f' }, 'Jour', h('select', { id: 'ph-day-' + m.id, onchange: e => { e.target.blur(); save({ id: m.id, day: e.target.value || null, placeId: null, bookingId: null }, 'Jour changé'); } },
+        h('option', { value: '' }, 'Sans jour'), tripDays().map(d => h('option', { value: d, selected: d === day ? true : null }, fmtDay(d))))),
+      h('label', { class: 'f' }, 'Étape', h('select', { id: 'ph-stop-' + m.id, disabled: !day && !targets.length ? true : null, onchange: e => { e.target.blur(); setLink(e.target.value); } },
+        h('option', { value: '' }, 'Journal du jour (sans étape)'), targets.map(t => h('option', { value: t.key, selected: t.key === cur ? true : null }, t.label))))),
+    sugg ? h('div', { class: 'row small' }, h('span', { class: 'muted' }, (m.gps && sugg.d != null ? 'Prise à ' + fmtDist(sugg.d) + ' de' : 'Prise peu après le tampon de') + ' :'),
+      h('button', { class: 'btn primary small', type: 'button', onclick: () => setLink(sugg.key) }, sugg.label)) : null,
+    m.linkedBy === 'gps' ? h('div', { class: 'muted small' }, 'Rattachée automatiquement par la position GPS de la photo.') : null);
+}
 function openDayNote(day){
   openSheet(close => h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead('Journal du ' + fmtDay(day), close),
     h('div', { class: 'sec' }, h('span', { class: 'muted small' }, 'Pour la journée, sans lieu précis.'),
       all('note').filter(n => n.day === day && !n.placeId && !n.bookingId).map(noteEl), noteForm({ day }),
-      thumbs(all('media').filter(m => m.role === 'photo' && m.day === day && !m.placeId)),
+      (loose => [thumbs(loose),
+        loose.length ? h('div', { class: 'muted small' }, 'Touche une photo pour la rattacher à une étape de la journée : elle apparaîtra alors dans la fiche du lieu.') : null,
+        (sg => sg.length ? h('button', { class: 'btn', type: 'button', onclick: async () => { for (const [m, t] of sg) await save({ id: m.id, ...linkOfKey(t.key), linkedBy: m.gps ? 'gps' : 'heure' }); toast(sg.length + ' photo' + (sg.length > 1 ? 's' : '') + ' rattachée' + (sg.length > 1 ? 's' : '') + ' (modifiable photo par photo)'); } },
+          'Rattacher ' + sg.length + ' photo' + (sg.length > 1 ? 's' : '') + ' à leur étape (position ou heure)') : null)(loose.map(m => [m, guessTarget(m, day) || timeTarget(m, day)]).filter(x => x[1]))
+      ])(all('media').filter(m => m.role === 'photo' && m.day === day && !m.placeId && !m.bookingId)),
       uploadButton('Ajouter des photos du jour', 'image/*', { role: 'photo', day }, true)), h('div', { style: 'height:8px' })));
 }
 
+/* ---- carte « adresse en japonais » : à montrer à un chauffeur de taxi ou à un passant ---- */
+function addrInfo(p, b){
+  const pick = k => (p && p[k]) || (b && b[k]) || null;
+  return { name: (p && p.name) || (b && b.title) || '', nameJa: pick('nameJa'), addressJa: pick('addressJa'), address: pick('address'), phone: pick('phone'), city: pick('city') };
+}
+const hasAddr = a => !!(a.addressJa || a.address || a.phone);
+function addrButton(a){ return hasAddr(a) ? h('button', { class: 'btn', type: 'button', onclick: () => openAddressCard(a) }, '住所 Carte adresse') : null; }
+function openAddressCard(a){
+  openSheet(close => h('div', { class: 'sheet addr-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Adresse à montrer' },
+    sheetHead('À montrer', close),
+    h('div', { class: 'sec', lang: 'ja' },
+      h('div', { class: 'ja-name' }, a.nameJa || a.name),
+      a.nameJa ? h('div', { class: 'muted', lang: 'fr' }, a.name) : null,
+      a.addressJa ? h('div', { class: 'ja-addr' }, a.addressJa)
+        : h('div', { lang: 'fr' }, h('div', { class: 'ja-addr latin' }, a.address || ''), h('div', { class: 'banner warn small' }, 'Adresse japonaise non renseignée : ajoute-la dans « Modifier » (champ « Adresse en japonais »), elle sera bien plus lisible pour un chauffeur.')),
+      a.phone ? h('a', { class: 'ja-tel mono', href: 'tel:' + a.phone.replace(/[^\d+]/g, '') }, '☎ ' + a.phone) : null,
+      h('div', { class: 'ja-phrase' }, 'この住所までお願いします。'),
+      h('div', { class: 'muted small', lang: 'fr' }, '« À cette adresse, s’il vous plaît. » Tourne le téléphone vers ton interlocuteur.'))));
+}
+
 /* ---- Réservations ---- */
-const BK = { hotel: 'Hôtel', resto: 'Restaurant', activite: 'Activité', transport: 'Transport', autre: 'Autre' };
+const BK = { hotel: 'Hôtel', resto: 'Restaurant', activite: 'Activité', transport: 'Transport', bagages: 'Bagages (takkyūbin)', autre: 'Autre' };
+// Suivi d'une réservation : tâches en attente, échéances, sommes à régler sur place.
+function bookingFollow(b){
+  const todos = (Array.isArray(b.todos) ? b.todos : []).map(t => typeof t === 'string' ? { text: t } : t);
+  const dls = Array.isArray(b.deadlines) ? b.deadlines : [], pays = Array.isArray(b.toPay) ? b.toPay : [];
+  const addF = (fields, onAdd, label) => { const f = h('form', { class: 'row', style: 'flex-wrap:nowrap;align-items:flex-end', onsubmit: async e => {
+      e.preventDefault(); const fd = new FormData(f); document.activeElement && document.activeElement.blur(); if (await onAdd(fd) !== false) f.reset(); } },
+    fields, h('button', { class: 'btn', type: 'submit' }, label)); return f; };
+  return h('details', { class: 'sec', open: todos.some(t => !t.done) || dls.some(d => !d.done) || pays.some(p => !p.paid) ? true : null },
+    h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Suivi : en attente, échéances, à régler'),
+    todos.map((t, i) => h('label', { class: 'check frow' }, h('input', { type: 'checkbox', checked: !!t.done, onchange: e => setSub(b, 'todos', i, { done: e.target.checked, doneAt: e.target.checked ? new Date().toISOString() : null, doneBy: e.target.checked ? meName() : null }) }),
+      h('span', { class: 'grow' + (t.done ? ' muted strike' : '') }, t.text))),
+    addF(h('input', { type: 'text', name: 't', id: 'todo-' + b.id, placeholder: 'Ex. réponse sur la navette', style: 'flex:1' }),
+      async fd => { const t = String(fd.get('t') || '').trim(); if (!t) return false; await save({ id: b.id, todos: [...todos, { text: t, done: false, by: meName(), at: new Date().toISOString() }] }, 'Ajouté'); }, 'Ajouter'),
+    dls.map((d, i) => h('div', { class: 'frow' }, h('span', { class: 'mono small' + (d.done ? ' muted' : '') }, fmtDay(d.date) + (d.time ? ' · ' + d.time : '')), h('span', { class: 'grow' + (d.done ? ' muted strike' : '') }, d.label || 'Échéance'),
+      h('button', { class: 'btn ghost small', type: 'button', onclick: () => setSub(b, 'deadlines', i, { done: !d.done }) }, d.done ? 'Rouvrir' : 'Fait'))),
+    addF([h('input', { type: 'date', name: 'd', id: 'dl-d-' + b.id, style: 'width:auto' }), h('input', { type: 'text', name: 'l', id: 'dl-l-' + b.id, placeholder: 'Ex. annulation gratuite', style: 'flex:1' })],
+      async fd => { const d = fd.get('d'); if (!d) return false; await save({ id: b.id, deadlines: [...dls, { date: d, label: String(fd.get('l') || '').trim() || 'Échéance' }] }, 'Échéance ajoutée'); }, 'Ajouter'),
+    pays.map((p, i) => h('div', { class: 'frow' }, h('b', { class: 'mono' + (p.paid ? ' muted strike' : '') }, money(p.amount, p.currency)), h('span', { class: 'muted small grow' }, (p.label || '') + (p.date && p.date !== b.date ? ' · ' + fmtDay(p.date) : '')),
+      h('button', { class: 'btn ghost small', type: 'button', onclick: () => setSub(b, 'toPay', i, { paid: !p.paid }, p.paid ? null : 'Marqué payé') }, p.paid ? 'Pas payé' : 'Payé'))),
+    addF([h('input', { type: 'text', name: 'a', id: 'pay-a-' + b.id, inputmode: 'numeric', placeholder: '¥', style: 'width:90px' }), h('input', { type: 'text', name: 'l', id: 'pay-l-' + b.id, placeholder: 'Ex. taxe de bain', style: 'flex:1' })],
+      async fd => { const a = Number(String(fd.get('a') || '').replace(/[^\d.]/g, '')); if (!a) return false; await save({ id: b.id, toPay: [...pays, { amount: a, currency: 'JPY', label: String(fd.get('l') || '').trim() || null, paid: false }] }, 'Montant ajouté'); }, 'Ajouter'));
+}
+// Billet en plein écran : fond blanc, image à la taille de l'écran, numéro de réservation en grand, écran maintenu allumé.
+async function presentTicket(m, b){
+  const isPdf = (m.mime || '').includes('pdf');
+  let lock = null; try { if (navigator.wakeLock) lock = await navigator.wakeLock.request('screen'); } catch {}
+  const root = h('div', { class: 'present', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Billet' });
+  const close = () => { root.remove(); try { lock && lock.release(); } catch {} document.removeEventListener('keydown', esc); };
+  const esc = e => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', esc);
+  const img = h('img', { alt: m.name || 'Billet' });
+  root.append(
+    h('div', { class: 'present-top' }, h('b', null, b ? b.title : (m.name || 'Billet')), h('button', { class: 'btn', type: 'button', onclick: close }, 'Fermer')),
+    isPdf ? h('div', { class: 'present-pdf' }, h('p', null, 'PDF : l’appli ne peut pas l’afficher en plein écran.'), h('button', { class: 'btn primary', type: 'button', onclick: () => openTicket(m) }, 'Ouvrir le PDF'),
+      h('p', { class: 'small' }, 'Astuce : joins plutôt une capture d’écran du QR code (image), elle s’affichera ici, même sans réseau.')) : img,
+    b && b.confirmation ? h('div', { class: 'present-conf mono' }, b.confirmation) : null,
+    h('div', { class: 'present-hint small' }, 'Monte la luminosité de l’écran pour la lecture du code.'));
+  document.body.append(root);
+  if (!isPdf){ const u = await mediaUrl(m, true).catch(() => null); if (u) img.src = u; else if (m.thumb) img.src = m.thumb; else img.replaceWith(h('p', { class: 'present-pdf' }, 'Billet indisponible hors ligne sur cet appareil.')); }
+}
 function bookingRow(b){
   const nt = mediaOf('bookingId', b.id, 'billet').length;
   return h('div', { class: 'bk', role: 'button', tabindex: '0', onclick: () => openBooking(b.id), onkeydown: e => { if (e.key === 'Enter') openBooking(b.id); } },
@@ -1707,6 +1933,35 @@ function bookingRow(b){
       nt ? h('span', { class: 'chip solid' }, nt + ' billet' + (nt > 1 ? 's' : '')) : null,
       b.cancelled ? h('span', { class: 'chip warn' }, 'Annulée') : null));
 }
+// « À suivre » : ce qui demande une action avant ou pendant le voyage, tiré des réservations.
+function followPanel(){
+  const td = todayIso();
+  const dl = deadlineItems(), todos = todoItems(), pay = payItems(), ci = checkinItems();
+  if (!dl.length && !todos.length && !pay.length && !ci.length) return null;
+  const when = (d, t) => fmtDay(d) + (t ? ' · ' + t : '');
+  const days = [...new Set(pay.map(x => x.date).filter(Boolean))].sort();
+  return h('div', { class: 'panel follow' },
+    h('div', { class: 'sec', style: 'padding-bottom:2px' }, h('div', { class: 'eyebrow' }, 'À suivre')),
+    dl.length ? h('div', { class: 'sec' }, h('h3', null, 'Échéances'),
+      dl.map(x => { const late = x.d.date < td, soon = !late && x.d.date <= addDays(td, 7);
+        return h('div', { class: 'frow' },
+          h('span', { class: 'mono small' + (late ? ' muted' : soon ? ' warn-t' : '') }, when(x.d.date, x.d.time)),
+          h('button', { class: 'linkish grow', type: 'button', onclick: () => openBooking(x.b.id) }, x.d.label || 'Échéance', h('span', { class: 'muted' }, ' · ' + x.b.title)),
+          late ? h('span', { class: 'chip' }, 'passée') : null,
+          h('button', { class: 'btn ghost small', type: 'button', onclick: () => setSub(x.b, 'deadlines', x.i, { done: true }, 'Échéance close') }, 'Fait')); })) : null,
+    todos.length ? h('div', { class: 'sec' }, h('h3', null, 'En attente'),
+      todos.map(x => h('label', { class: 'check frow' },
+        h('input', { type: 'checkbox', onchange: () => setSub(x.b, 'todos', x.i, { done: true, doneAt: new Date().toISOString(), doneBy: meName() }, 'Coché') }),
+        h('span', { class: 'grow' }, x.t.text, ' ', h('button', { class: 'linkish muted', type: 'button', onclick: e => { e.preventDefault(); openBooking(x.b.id); } }, '· ' + x.b.title))))) : null,
+    pay.length ? h('div', { class: 'sec' }, h('h3', null, 'À régler sur place · ' + payTotal(pay)),
+      h('div', { class: 'muted small' }, 'Prévoir du liquide : à la campagne, la carte passe mal.'),
+      days.map(d => h('div', { class: 'frow' }, h('span', { class: 'mono small' }, fmtDay(d)), h('b', { class: 'mono' }, payTotal(payOf(d))),
+        h('span', { class: 'muted small grow' }, payOf(d).map(x => (x.p.label || x.b.title)).join(' · '))))) : null,
+    ci.length ? h('div', { class: 'sec' }, h('h3', null, 'Arrivées à l’hôtel'),
+      ci.sort((a, b) => a.date.localeCompare(b.date)).map(b => h('div', { class: 'frow' }, h('span', { class: 'mono small' }, fmtDay(b.date)),
+        h('button', { class: 'linkish grow', type: 'button', onclick: () => openBooking(b.id) }, b.title),
+        h('span', { class: 'mono small' + (b.checkinUntil ? ' warn-t' : '') }, (b.time ? 'dès ' + b.time : '') + (b.checkinUntil ? ' · avant ' + b.checkinUntil : ''))))) : null);
+}
 function viewBookings(){
   const ds = tripDays(); const list = bookings();
   const inTrip = list.filter(b => b.date && ds.includes(b.date)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
@@ -1716,6 +1971,7 @@ function viewBookings(){
     h('div', { class: 'spread' }, h('div', null, h('div', { class: 'eyebrow' }, list.length + ' réservation' + (list.length > 1 ? 's' : '')), h('h2', null, 'Réservations et billets')),
       h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => askClaude('Importe mes nouvelles réservations Gmail pour ce voyage dans le dossier Drive « Tabi - Japon », en suivant le format du README.') }, 'Import Gmail par Claude'),
         h('button', { class: 'btn primary', type: 'button', onclick: () => openBookingForm() }, 'Ajouter'))),
+    followPanel(),
     !list.length ? h('div', { class: 'panel empty' }, h('h3', null, 'Aucune réservation pour l’instant'), h('span', null, 'Claude peut lire tes confirmations Gmail et les déposer ici : bouton « Import Gmail par Claude ». Tu peux aussi saisir une réservation et joindre ses billets.')) : null,
     ...Object.entries(groups).map(([d, l]) => h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, fmtDay(d, { weekday: 'long', day: 'numeric', month: 'long' }))), ...l.map(bookingRow))),
     other.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Hors des dates du voyage ou sans date')), ...other.map(bookingRow)) : null,
@@ -1724,8 +1980,8 @@ function viewBookings(){
 function openBooking(id){
   let confirmDel = false;
   openSheet(close => {
-    const b = S.items.get(id); if (!b) return null;
-    const tickets = mediaOf('bookingId', id, 'billet'); const place = b.placeId && S.items.get(b.placeId);
+    const b = live(id); if (!b) return null;
+    const tickets = mediaOf('bookingId', id, 'billet'); const place = live(b.placeId);
     const del = async withPlace => { close(); if (withPlace && place) await removeItem(place.id); await removeItem(id); toast(withPlace && place ? 'Réservation et lieu supprimés' : 'Réservation supprimée'); };
     return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': b.title },
       sheetHead(b.title, close),
@@ -1734,15 +1990,29 @@ function openBooking(id){
         h('div', { class: 'mono' }, b.date ? fmtDay(b.date, { weekday: 'long', day: 'numeric', month: 'long' }) + (b.time ? ' · ' + b.time : '') : 'Date inconnue', b.endDate && b.endDate !== b.date ? ' → ' + fmtDay(b.endDate) + (b.endTime ? ' · ' + b.endTime : '') : ''),
         b.confirmation ? h('div', { class: 'row' }, h('span', { class: 'muted' }, 'N° de réservation'), h('span', { class: 'conf' }, b.confirmation),
           h('button', { class: 'btn ghost', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(b.confirmation); toast('Copié'); } catch { toast('Copie impossible : sélectionne le numéro.'); } } }, 'Copier')) : null,
-        b.address ? h('div', null, b.address) : null, b.details ? h('div', { class: 'muted' }, b.details) : null,
+        b.address ? h('div', null, b.address) : null, b.addressJa ? h('div', { lang: 'ja' }, b.addressJa) : null,
+        b.phone ? h('a', { class: 'mono', href: 'tel:' + b.phone.replace(/[^\d+]/g, '') }, '☎ ' + b.phone) : null,
+        b.kind === 'hotel' && (b.time || b.checkinUntil) ? h('div', { class: 'mono small' }, 'Arrivée ' + (b.time ? 'dès ' + b.time : '') + (b.checkinUntil ? ' · au plus tard ' + b.checkinUntil : '')) : null,
+        b.details ? h('div', { class: 'muted' }, b.details) : null,
         h('div', { class: 'row' },
           b.address || place ? h('a', { class: 'btn', href: place ? placeUrl(place) : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(b.address), target: '_blank', rel: 'noopener' }, 'Google Maps') : null,
+          addrButton(addrInfo(place, b)),
           b.gmailUrl ? h('a', { class: 'btn', href: b.gmailUrl, target: '_blank', rel: 'noopener' }, 'Ouvrir le mail') : null,
           place ? h('button', { class: 'btn', type: 'button', onclick: () => openPlace(place.id) }, 'Voir le lieu') : null),
         b.gmailUrl ? h('div', { class: 'muted small' }, 'Le mail ne s’ouvre que dans la boîte Gmail qui l’a reçu. Pour que vous l’ayez tous les deux, joins le billet ci-dessous.') : null),
+      bookingFollow(b),
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Billets et documents'),
-        tickets.length ? tickets.map(m => h('button', { class: 'doc', type: 'button', onclick: () => openTicket(m) }, h('span', null, m.name || 'Document'), h('span', { class: 'muted', style: 'margin-left:auto' }, (m.mime || '').includes('pdf') ? 'PDF' : 'Image', m._localBlob ? ' · en attente' : ''))) : h('span', { class: 'muted' }, 'Aucun billet joint.'),
+        tickets.length ? tickets.map(m => h('div', { class: 'row', style: 'flex-wrap:nowrap' },
+          h('button', { class: 'doc', type: 'button', style: 'flex:1', onclick: () => presentTicket(m, b) }, h('span', null, m.name || 'Document'), h('span', { class: 'muted', style: 'margin-left:auto' }, (m.mime || '').includes('pdf') ? 'PDF' : 'Image', m._localBlob ? ' · en attente' : '')),
+          h('button', { class: 'btn ghost', type: 'button', onclick: () => openTicket(m), title: 'Ouvrir le fichier (Drive ou copie locale)' }, 'Ouvrir'))) : h('span', { class: 'muted' }, 'Aucun billet joint.'),
+        tickets.length ? h('div', { class: 'muted small' }, 'Touche un billet pour le présenter en plein écran (gardé sur le téléphone, utilisable sans réseau).') : null,
         uploadButton('Joindre un billet (PDF ou image)', 'application/pdf,image/*', { role: 'billet', bookingId: id, day: b.date || null }, true)),
+      // les photos d'une réservation liée à un lieu sont rangées avec le lieu ; sinon (rendez-vous, hôtel sans lieu) avec la réservation
+      h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Photos'),
+        place ? [(ph => ph.length ? thumbs(ph) : h('span', { class: 'muted' }, 'Pas encore de photo.'))(mediaOf('placeId', place.id, 'photo')),
+            uploadButton('Ajouter des photos', 'image/*', { role: 'photo', placeId: place.id, day: place.day || b.date || null }, true)]
+          : [(ph => ph.length ? thumbs(ph) : h('span', { class: 'muted' }, 'Pas encore de photo.'))(mediaOf('bookingId', id, 'photo')),
+            uploadButton('Ajouter des photos', 'image/*', { role: 'photo', bookingId: id, day: b.date || null }, true)]),
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Notes'), notesOf('bookingId', id).map(noteEl), noteForm({ bookingId: id })),
       h('div', { class: 'sec' }, h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: () => openBookingForm(b) }, 'Modifier'),
@@ -1770,7 +2040,8 @@ function openBookingForm(b){
     const f = h('form', { class: 'form', onsubmit: async e => {
       e.preventDefault(); const fd = new FormData(f);
       const data = { title: String(fd.get('title')).trim(), kind: fd.get('kind'), date: fd.get('date') || null, time: fd.get('time') || null, endDate: fd.get('endDate') || null, endTime: fd.get('endTime') || null,
-        confirmation: String(fd.get('confirmation') || '').trim() || null, address: String(fd.get('address') || '').trim() || null, details: String(fd.get('details') || '').trim() || null };
+        confirmation: String(fd.get('confirmation') || '').trim() || null, address: String(fd.get('address') || '').trim() || null, details: String(fd.get('details') || '').trim() || null,
+        addressJa: String(fd.get('addressJa') || '').trim() || null, phone: String(fd.get('phone') || '').trim() || null, checkinUntil: fd.get('checkinUntil') || null };
       if (!data.title) return; document.activeElement && document.activeElement.blur();
       if (b.id) await save({ id: b.id, ...data }, 'Réservation enregistrée');
       else await save({ id: uid(), type: 'booking', ...data, source: 'manuel', createdBy: meName(), createdAt: new Date().toISOString() }, 'Réservation ajoutée');
@@ -1783,6 +2054,9 @@ function openBookingForm(b){
       h('div', { class: 'grid2' }, h('label', { class: 'f' }, 'Date', h('input', { type: 'date', name: 'date', id: 'bf-date', value: b.date || '' })), h('label', { class: 'f' }, 'Heure', h('input', { type: 'time', name: 'time', id: 'bf-time', value: b.time || '' }))),
       h('div', { class: 'grid2' }, h('label', { class: 'f' }, 'Fin (départ, check-out)', h('input', { type: 'date', name: 'endDate', id: 'bf-edate', value: b.endDate || '' })), h('label', { class: 'f' }, 'Heure de fin', h('input', { type: 'time', name: 'endTime', id: 'bf-etime', value: b.endTime || '' }))),
       h('label', { class: 'f' }, 'Adresse', h('input', { type: 'text', name: 'address', id: 'bf-addr', value: b.address || '' })),
+      h('label', { class: 'f' }, 'Adresse en japonais', h('input', { type: 'text', name: 'addressJa', id: 'bf-addrja', lang: 'ja', value: b.addressJa || '' })),
+      h('div', { class: 'grid2' }, h('label', { class: 'f' }, 'Téléphone', h('input', { type: 'tel', name: 'phone', id: 'bf-phone', value: b.phone || '' })),
+        h('label', { class: 'f' }, 'Arrivée au plus tard (hôtel)', h('input', { type: 'time', name: 'checkinUntil', id: 'bf-ciu', value: b.checkinUntil || '' }))),
       h('label', { class: 'f' }, 'Détails', h('textarea', { name: 'details', id: 'bf-details' }, b.details || '')),
       h('div', null, h('button', { class: 'btn primary', type: 'submit' }, 'Enregistrer')));
     return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead(b.id ? 'Modifier la réservation' : 'Nouvelle réservation', close), f);
@@ -1820,13 +2094,17 @@ function viewMemories(){
   if (!daysWith.length) out.push(h('div', { class: 'panel empty' }, h('h3', null, 'Rien encore'), h('span', null, 'Chaque lieu tamponné, chaque photo et chaque note viendra s’inscrire ici, jour par jour, dans l’ordre réel de la visite.')));
   for (const d of daysWith){
     const v = ps.filter(p => p.day === d && p.status === 'visited').sort((a, b) => (a.visitedAt || '').localeCompare(b.visitedAt || ''));
-    const dayPhotos = photos.filter(m => m.day === d && !m.placeId); const dayNotes = all('note').filter(n => n.day === d && !n.placeId && !n.bookingId);
+    const dayPhotos = photos.filter(m => m.day === d && !m.placeId && !m.bookingId); const dayNotes = all('note').filter(n => n.day === d && !n.placeId && !n.bookingId);
+    const bkPh = bookings().filter(b => mediaOf('bookingId', b.id, 'photo').some(m => (m.day || b.date) === d));
     out.push(h('div', { class: 'mem-day' },
       h('div', { class: 'spread' }, h('h3', null, fmtDay(d, { weekday: 'long', day: 'numeric', month: 'long' })), h('span', { class: 'eyebrow' }, 'J' + (ds.indexOf(d) + 1))),
       h('div', { class: 'tl' }, v.map(p => { const ph = mediaOf('placeId', p.id, 'photo'), nt = notesOf('placeId', p.id);
         return h('div', { class: 'tl-item' + (p.addedDuring ? ' unplanned' : '') },
           h('div', { class: 'row' }, h('span', { class: 'mono muted' }, p.visitedAt ? fmtTime(p.visitedAt) : ''), h('strong', { style: 'cursor:pointer', onclick: () => openPlace(p.id) }, p.name), p.addedDuring ? h('span', { class: 'chip warn' }, 'improvisé') : null),
-          nt.map(noteEl), ph.length ? h('div', { style: 'margin-top:6px' }, thumbs(ph)) : null); })),
+          nt.map(noteEl), ph.length ? h('div', { style: 'margin-top:6px' }, thumbs(ph)) : null); }),
+        bkPh.map(b => h('div', { class: 'tl-item' },
+          h('div', { class: 'row' }, h('span', { class: 'mono muted' }, b.time || ''), h('strong', { style: 'cursor:pointer', onclick: () => openBooking(b.id) }, b.title)),
+          h('div', { style: 'margin-top:6px' }, thumbs(mediaOf('bookingId', b.id, 'photo')))))),
       dayNotes.map(noteEl), dayPhotos.length ? thumbs(dayPhotos) : null));
   }
   return out;
@@ -1872,7 +2150,31 @@ function viewClaude(){
         h('button', { class: 'btn', type: 'button', onclick: () => save({ id: p.id, status: 'planned', day: null }, 'Gardé en idée') }, 'Garder en idée'),
         h('button', { class: 'btn ghost', type: 'button', onclick: () => removeItem(p.id) }, 'Ignorer'))))) :
       h('div', { class: 'panel empty' }, h('span', null, 'Aucune suggestion en attente.')),
+    recapPanel(),
   ];
+}
+// Récap du voyage : éléments `recap` (décisions, idées retenues, points ouverts) déposés par Claude ou saisis ici.
+const RECAP = { ouvert: 'Points ouverts', decision: 'Décisions', idee: 'Idées retenues' };
+const RECAP1 = { ouvert: 'Point ouvert', decision: 'Décision', idee: 'Idée retenue' };
+function recapPanel(){
+  const items = all('recap').sort((a, b) => (b.at || b.updatedAt || '').localeCompare(a.at || a.updatedAt || ''));
+  const sel = h('select', { name: 's', id: 'rc-s', style: 'width:auto' }, Object.entries(RECAP1).map(([v, l]) => h('option', { value: v }, l)));
+  const f = h('form', { class: 'row', style: 'flex-wrap:nowrap;align-items:flex-end', onsubmit: async e => {
+    e.preventDefault(); const fd = new FormData(f); const text = String(fd.get('t') || '').trim(); if (!text) return; document.activeElement && document.activeElement.blur(); f.reset();
+    await save({ id: 'rc-' + uid(), type: 'recap', section: fd.get('s'), text, by: meName(), at: new Date().toISOString(), done: false }, 'Ajouté au récap'); } },
+    sel, h('input', { type: 'text', name: 't', id: 'rc-t', placeholder: 'Ajouter au récap…', style: 'flex:1' }), h('button', { class: 'btn', type: 'submit' }, 'OK'));
+  return h('div', { class: 'panel' },
+    h('div', { class: 'sec', style: 'padding-bottom:2px' }, h('div', { class: 'eyebrow' }, 'Récap du voyage')),
+    Object.entries(RECAP).map(([k, l]) => { const l2 = items.filter(x => (x.section || 'ouvert') === k && !(k === 'ouvert' && x.done));
+      return l2.length ? h('div', { class: 'sec' }, h('h3', null, l),
+        l2.map(x => h('div', { class: 'frow' },
+          k === 'ouvert' ? h('input', { type: 'checkbox', 'aria-label': 'Réglé', onchange: () => save({ id: x.id, done: true, doneAt: new Date().toISOString(), doneBy: meName() }, 'Point réglé') }) : null,
+          h('span', { class: 'grow' }, x.text, h('span', { class: 'muted small' }, ' · ' + (x.by || x.updatedBy || '') + (x.at ? ' ' + fmtDay(isoDay(new Date(x.at))) : ''))),
+          h('button', { class: 'btn ghost small', type: 'button', 'aria-label': 'Retirer', onclick: () => save({ id: x.id, deleted: true }, 'Retiré du récap') }, '×')))) : null; }),
+    items.some(x => x.section === 'ouvert' && x.done) ? h('details', { class: 'sec' }, h('summary', { class: 'muted small', style: 'cursor:pointer' }, 'Points réglés'),
+      items.filter(x => x.section === 'ouvert' && x.done).map(x => h('div', { class: 'muted small strike' }, x.text))) : null,
+    !items.length ? h('div', { class: 'sec muted small' }, 'Les décisions et points ouverts que Claude note après vos échanges apparaîtront ici. L’ancien fichier Récap.md reste lisible dans le Drive.') : null,
+    h('div', { class: 'sec' }, f));
 }
 
 /* ---- Voyage, réglages ---- */

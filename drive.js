@@ -83,6 +83,14 @@ export const drive = {
   },
   updateJson: (id, obj) => call(`${UP}/files/${id}?uploadType=media&fields=id,version,modifiedTime&${ALL}`,
     { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj, null, 1) }),
+  readText: id => call(`${API}/files/${id}?alt=media&${ALL}`, {}, true).then(r => r.text()),
+  updateText: (id, text, mime = 'text/markdown') => call(`${UP}/files/${id}?uploadType=media&fields=id,version&${ALL}`,
+    { method: 'PATCH', headers: { 'Content-Type': mime + '; charset=UTF-8' }, body: text }),
+  async createText(parent, name, text, mime = 'text/markdown'){
+    const b = 'tabi' + Math.random().toString(36).slice(2);
+    const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name, parents: [parent], mimeType: mime })}\r\n--${b}\r\nContent-Type: ${mime}; charset=UTF-8\r\n\r\n${text}\r\n--${b}--`;
+    return call(`${UP}/files?uploadType=multipart&fields=id,version&${ALL}`, { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + b }, body });
+  },
   trash: id => call(`${API}/files/${id}?fields=id&${ALL}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }),
   // Envoi de fichier (photo, billet) en deux temps pour supporter les gros fichiers.
   async upload(parent, name, blob, mime, appProperties){
