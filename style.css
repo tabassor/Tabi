@@ -417,3 +417,17 @@ main[data-view=souvenirs] .note{border-left-color:var(--hanko-soft);font-family:
   main{view-transition-name:none}
   .stamp.done,.seal{transform:none}
 }
+
+/* icônes de catégorie : dans l'étiquette et sur les repères d'idées de la carte */
+.chip .ki{width:13px;height:13px;flex:none;stroke-width:2.2}
+.ki-onsen{font:700 13px/1 var(--f-body);display:inline-block;width:auto;height:auto}
+.mk.i{width:30px;height:30px;border-width:2px;border-style:dashed;background:var(--surface);font-size:15px}
+.mk.i .ki{width:16px;height:16px}
+.mk.i .ki-onsen{font-size:16px}
+.mk.i.sg{border-style:solid;box-shadow:0 0 0 3px var(--stamp-soft),0 1px 4px rgba(0,0,0,.25)}
+.mk.i.k-visite{color:var(--stamp);border-color:var(--stamp)}.mk.i.k-temple{color:#A23B2C;border-color:#A23B2C}.mk.i.k-musee{color:#6B4E9B;border-color:#6B4E9B}
+.mk.i.k-expo{color:#9B4E86;border-color:#9B4E86}.mk.i.k-parc{color:#3E7D3A;border-color:#3E7D3A}.mk.i.k-vue{color:#2C7A8C;border-color:#2C7A8C}
+.mk.i.k-magasin{color:#8A6A1F;border-color:#8A6A1F}.mk.i.k-resto{color:#B4532A;border-color:#B4532A}.mk.i.k-cafe{color:#7A5134;border-color:#7A5134}
+.mk.i.k-onsen{color:#2F6DB5;border-color:#2F6DB5}.mk.i.k-activite{color:var(--ok);border-color:var(--ok)}.mk.i.k-hotel{color:#2F6DB5;border-color:#2F6DB5}
+.mk.i.k-transport{color:#0F7C8F;border-color:#0F7C8F}.mk.i.k-bagages{color:#0F7C8F;border-color:#0F7C8F}.mk.i.k-autre{color:var(--muted);border-color:var(--muted)}
+

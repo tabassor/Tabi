@@ -1,8 +1,8 @@
 // Service worker Tabi : appli disponible hors ligne, fond de carte mis en cache au fil de l'usage.
-const SHELL = 'tabi-shell-v21';
+const SHELL = 'tabi-shell-v22';
 const TILES = 'tabi-tiles-v1';
 const MAPMETA = 'tabi-mapmeta-v1';
-const FILES = ['./', 'index.html', 'style.css', 'app.js', 'routes.js', 'drive.js', 'store.js', 'config.js', 'manifest.webmanifest', 'drive-readme.md',
+const FILES = ['./', 'index.html', 'style.css', 'app.js', 'routes.js', 'drive.js', 'store.js', 'icons.js', 'config.js', 'manifest.webmanifest', 'drive-readme.md',
   'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png'];
 
 // Installation tolérante : un fichier indisponible ne doit pas empêcher l'installation de l'appli.

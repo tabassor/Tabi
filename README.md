@@ -59,6 +59,8 @@ Base « ligne de train » (signalétique ferroviaire japonaise) et touche « was
 - **Souvenirs** : papier washi, titres en Shippori Mincho, sceau 旅.
 - **Chargement** : silhouettes grisées. Toutes les animations sont coupées si le téléphone demande moins de mouvements.
 
+Icônes de catégorie : tracés Tabler Icons (MIT) embarqués dans `icons.js`, ♨ pour les onsen, torii pour « Temple / sanctuaire » ; affichées dans les étiquettes de catégorie et sur les repères d'idées et de suggestions de la carte.
+
 Jetons de couleur en tête de la couche « refonte v21 » de `style.css` (`--stamp` = accent sarcelle, `--hanko` = vermillon, `--washi`).
 
 ## Développement

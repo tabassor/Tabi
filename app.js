@@ -3,6 +3,7 @@
 import { CONFIG } from './config.js';
 import { drive, signIn, hasToken, clearToken } from './drive.js';
 import { idb } from './store.js';
+import { KIND_ICONS } from './icons.js';
 import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate, googleAutocomplete, googlePlace, kindFromGoogle, googleNearby, osmNearby, kindFromOsmTags } from './routes.js';
 
 /* ================= utilitaires ================= */
@@ -37,7 +38,16 @@ async function pool(list, n, fn){ const q = [...list]; await Promise.all(Array.f
 
 const KINDS = { visite: 'Visite', temple: 'Temple / sanctuaire', musee: 'Musée', expo: 'Exposition', parc: 'Parc / jardin', vue: 'Point de vue',
   magasin: 'Magasin', resto: 'Restaurant', cafe: 'Café', onsen: 'Onsen / bain', activite: 'Activité', hotel: 'Hôtel', transport: 'Transport', autre: 'Autre' };
-const kindChip = k => h('span', { class: 'chip k-' + (KINDS[k] || BK[k] ? k : 'autre') }, KINDS[k] || BK[k] || 'Autre');
+// Icône de catégorie : tracé au trait (icons.js), ou symbole cartographique ♨ pour les onsen.
+function kindIcon(k){
+  if (k === 'onsen') return h('span', { class: 'ki ki-onsen', 'aria-hidden': 'true' }, '♨');
+  const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg');
+  for (const [a, v] of [['viewBox', '0 0 24 24'], ['fill', 'none'], ['stroke', 'currentColor'], ['stroke-width', '2'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round'], ['aria-hidden', 'true'], ['class', 'ki']]) svg.setAttribute(a, v);
+  for (const d of KIND_ICONS[k] || KIND_ICONS.autre){ const p = document.createElementNS(NS, 'path'); p.setAttribute('d', d); svg.append(p); }
+  return svg;
+}
+const kindKey = k => KINDS[k] || BK[k] ? k : 'autre';
+const kindChip = k => h('span', { class: 'chip k-' + kindKey(k) }, kindIcon(kindKey(k)), KINDS[k] || BK[k] || 'Autre');
 // Fin d'année au Japon : du 29/12 au 3/01, beaucoup de musées, jardins, boutiques et restaurants ferment ou changent d'horaires.
 const isNewYear = d => !!d && (d.slice(5) >= '12-29' || d.slice(5) <= '01-03');
 const NY_KINDS = new Set(['visite', 'musee', 'expo', 'parc', 'magasin', 'resto', 'cafe', 'activite']);
@@ -606,7 +616,10 @@ function updateMap(){
   const ideas = M.showIdeas ? placesOf(null).filter(hasPos) : [];
   const css = getComputedStyle(document.documentElement); const col = n => css.getPropertyValue(n).trim();
   const cRoute = col('--route') || '#8A93AB', cStamp = col('--stamp') || '#6338B0';
-  for (const p of ideas) E.marker(markerEl('i', '?', () => openPlace(p.id), 'Idée : ' + p.name), p);
+  // idées (et suggestions de Claude pour ce jour) : repère à l'icône de leur catégorie
+  for (const p of ideas) E.marker(markerEl('i k-' + kindKey(p.kind), kindIcon(kindKey(p.kind)), () => openPlace(p.id), 'Idée · ' + (KINDS[p.kind] || 'Autre') + ' : ' + p.name), p);
+  if (M.showIdeas) for (const p of all('place').filter(x => x.status === 'suggested' && x.day === day && hasPos(x)))
+    E.marker(markerEl('i sg k-' + kindKey(p.kind), kindIcon(kindKey(p.kind)), () => { S.view = 'claude'; LS.set('tabi.view', 'claude'); renderAll(); }, 'Suggestion de Claude · ' + p.name), p);
   pts.forEach(p => {
     const i = ps.indexOf(p);
     E.marker(p.anchor ? (() => { const el = markerEl('h', 'H', () => openBooking(p.bookingId), p.name); const c = dayColor(dayIdx(day)); el.style.background = c; el.style.borderColor = c; el.style.color = '#fff'; return el; })()
