@@ -1335,16 +1335,39 @@ function openPlaceForm(init){
   async function search(){
     const q = st.v.name.trim(); if (!q) return;
     st.searching = true; st.results = null; S.sheet.render();
-    st.engine = 'osm';
-    if (gKey() && !openPlaceForm.gFailed){
+    st.engine = 'osm'; st.gErr = null; st.results = [];
+    // 1. Google (si une clé est enregistrée) ; la raison d'un refus est affichée sous les résultats.
+    if (!gKey()) st.gErr = 'pas de clé Google enregistrée dans les réglages';
+    else {
       try { st.results = await googleAutocomplete(gKey(), q, biasPoint(), st.session); st.engine = 'google'; }
-      catch (e){ console.warn('Tabi Places', e); if (e.status === 403 || e.status === 400){ openPlaceForm.gFailed = true; toast('Recherche Google refusée (active « Places API (New) » sur la clé) : OpenStreetMap utilisé.'); } }
+      catch (e){
+        console.warn('Tabi Places', e);
+        st.gErr = e.status === 403 ? 'clé refusée : ajoute « Places API (New) » aux API autorisées de la clé'
+          : e.status === 429 ? 'quota du jour atteint' : e.status === 400 ? 'requête refusée (' + e.message + ')' : e.message;
+      }
     }
-    if (st.engine === 'osm'){
+    // 2. Sans résultat Google : OpenStreetMap (Nominatim, puis Photon, plus tolérant sur l'orthographe).
+    if (!st.results.length){
+      const qs = [...new Set([q, q.replace(/[-‐‑–]/g, ' ').replace(/\s+/g, ' ')])];
       try {
-        const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&accept-language=fr,en,ja&q=' + encodeURIComponent(q));
-        st.results = (r.ok ? await r.json() : []).map(x => ({ src: 'osm', name: x.name || x.display_name.split(',')[0], sub: x.display_name, kind: kindFromOsm(x), raw: x }));
-      } catch { st.results = []; toast('Recherche indisponible (réseau).'); }
+        for (const qq of qs){
+          const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&namedetails=1&limit=6&accept-language=fr,en,ja&q=' + encodeURIComponent(qq));
+          const l = r.ok ? await r.json() : [];
+          if (l.length){ st.results = l.map(x => ({ src: 'osm', name: x.name || x.display_name.split(',')[0], sub: x.display_name, kind: kindFromOsm(x), raw: x })); st.engine = st.engine === 'google' ? 'google+osm' : 'osm'; break; }
+        }
+        if (!st.results.length){
+          const b = biasPoint();
+          const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=en&lat=' + b.lat + '&lon=' + b.lng + '&q=' + encodeURIComponent(qs[qs.length - 1]));
+          const j = r.ok ? await r.json() : {};
+          st.results = (j.features || []).map(f => { const P = f.properties || {}; const c = f.geometry && f.geometry.coordinates || [];
+            const parts = [P.name, P.street && (P.housenumber ? P.housenumber + ' ' : '') + P.street, P.district, P.city || P.town || P.village, P.state, P.country].filter(Boolean);
+            const raw = { lat: c[1], lon: c[0], name: P.name || '', display_name: parts.join(', '), class: P.osm_key, type: P.osm_value,
+              address: { city: P.city || P.town || P.village || P.district || P.county || '' } };
+            return { src: 'osm', name: raw.name || parts[0] || q, sub: raw.display_name, kind: kindFromOsm(raw), raw };
+          }).filter(r => r.raw.lat != null);
+          if (st.results.length) st.engine = 'photon';
+        }
+      } catch { toast('Recherche OpenStreetMap indisponible (réseau).'); }
     }
     st.searching = false; S.sheet && S.sheet.render();
   }
@@ -1373,8 +1396,9 @@ function openPlaceForm(init){
       st.searching ? h('div', { class: 'row muted small' }, h('span', { class: 'spin' }), 'Recherche…') : null,
       st.results ? (st.results.length ? h('div', { class: 'results' }, st.results.map(r => h('button', { type: 'button', onclick: () => pick(r) },
           h('strong', null, r.name), h('span', { class: 'chip', style: 'margin-left:6px' }, KINDS[r.src === 'g' ? kindFromGoogle(r.types) : r.kind]), h('div', { class: 'muted small' }, r.sub))),
-          st.engine === 'google' ? h('div', { class: 'muted small', style: 'padding:4px 10px;text-align:right' }, 'Résultats Google') : null)
+          h('div', { class: 'muted small', style: 'padding:4px 10px;text-align:right' }, { google: 'Résultats Google', 'google+osm': 'Rien chez Google · résultats OpenStreetMap', osm: 'Résultats OpenStreetMap', photon: 'Résultats OpenStreetMap (Photon)' }[st.engine] || ''))
         : h('div', { class: 'muted small' }, 'Aucun résultat. Essaie le nom en anglais ou en japonais, colle un lien Google Maps, ou place le lieu sur la carte.')) : null,
+      st.results && st.gErr ? h('div', { class: 'small warn-t' }, 'Recherche Google indisponible : ' + st.gErr + '.') : null,
       st.coords ? h('div', { class: 'banner' }, '✓ Position trouvée', st.picked ? ' · ' + st.v.address.slice(0, 110) : ' (' + st.coords.lat.toFixed(5) + ', ' + st.coords.lng.toFixed(5) + ')',
           h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.coords = null; st.picked = null; S.sheet.render(); } }, 'Effacer'))
         : h('div', { class: 'muted small' }, 'Cherche le lieu pour remplir automatiquement sa position, sa ville et son type.'),
