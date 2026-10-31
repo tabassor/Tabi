@@ -231,3 +231,7 @@ ol.nav-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:colu
 /* étapes issues d'une réservation (rendez-vous, restaurant…) */
 .stamp.ev{border:2px solid var(--stamp);border-radius:10px;color:var(--stamp);font-weight:700;cursor:pointer}
 .mk.e{border-radius:7px}
+/* suivi de consommation */
+.usage-row{display:grid;gap:4px;padding:6px 0;border-bottom:1px solid var(--line)}
+.usage-bar{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.usage-bar span{display:block;height:100%;background:var(--stamp)}

@@ -451,6 +451,7 @@ function googleEngine(box){
   let map = null, transitLayer = null, me = null, watch = null;
   loadGoogleMaps().then(() => {
     if (M.eng !== eng) return;
+    bumpG('map');
     map = new google.maps.Map(box, { center: { lat: 35.68, lng: 139.75 }, zoom: 11, mapTypeControl: false, streetViewControl: false, fullscreenControl: true, clickableIcons: true, gestureHandling: 'greedy' });
     transitLayer = new google.maps.TransitLayer(); if (M.transit) transitLayer.setMap(map);
     map.addListener('click', e => { if (M.placing && e.latLng){ if (e.stop) e.stop(); mapClicked({ lat: e.latLng.lat(), lng: e.latLng.lng() }); } });
@@ -1123,6 +1124,57 @@ const navQuota = () => (S.items.get('navitime') || {}).monthlyQuota || 500;
 const monthKey = () => todayIso().slice(0, 7);
 const navUsage = () => { const u = S.items.get('navusage'); return u && u.month === monthKey() ? (u.n || 0) : 0; };
 const bumpNav = () => save({ id: 'navusage', type: 'usage', month: monthKey(), n: navUsage() + 1 });
+/* ---- Suivi de la consommation Google (compteurs tenus par l'appli, un fichier par appareil pour éviter les conflits) ---- */
+// Tarifs Google Maps Platform (grille mondiale, relevée le 31/10/2026) : gratuit par mois, puis USD pour 1 000 appels.
+const GSKU = {
+  ac:  { label: 'Recherches de lieux', sku: 'Autocomplete Requests', free: 10000, price: 2.83, day: 500 },
+  det: { label: 'Fiches lieu ajoutées', sku: 'Place Details Pro', free: 5000, price: 17, day: 100 },
+  map: { label: 'Chargements de carte', sku: 'Dynamic Maps', free: 10000, price: 7, day: 200 },
+  emb: { label: 'Cartes d’itinéraire', sku: 'Maps Embed', free: Infinity, price: 0, day: null } };
+const devId = (() => { let d = LS.get('tabi.dev'); if (!d){ d = uid(); LS.set('tabi.dev', d); } return d; })();
+let gPend = {}, gT = null;
+function bumpG(k){
+  gPend[k] = (gPend[k] || 0) + 1;
+  clearTimeout(gT); gT = setTimeout(flushG, 4000);
+}
+async function flushG(){
+  const add = gPend; gPend = {}; if (!Object.keys(add).length) return;
+  const id = 'gusage-' + devId, m = monthKey(), d = todayIso();
+  const cur = S.items.get(id); const days = cur && cur.month === m ? { ...(cur.days || {}) } : {};
+  const t = { ...(days[d] || {}) }; for (const [k, n] of Object.entries(add)) t[k] = (t[k] || 0) + n; days[d] = t;
+  await save({ id, type: 'usage', month: m, device: devId, by: meName(), days });
+}
+window.addEventListener('pagehide', () => { if (Object.keys(gPend).length) flushG(); });
+function gUsage(){
+  const m = monthKey(), d = todayIso(), month = {}, today = {};
+  for (const u of all('usage')) if (u.id.startsWith('gusage-') && u.month === m) for (const [day, t] of Object.entries(u.days || {}))
+    for (const [k, n] of Object.entries(t)){ month[k] = (month[k] || 0) + n; if (day === d) today[k] = (today[k] || 0) + n; }
+  for (const [k, n] of Object.entries(gPend)){ month[k] = (month[k] || 0) + n; today[k] = (today[k] || 0) + n; }
+  return { month, today };
+}
+function usagePanel(){
+  const { month, today } = gUsage(); let cost = 0;
+  const rows = Object.entries(GSKU).map(([k, s]) => {
+    const n = month[k] || 0, t = today[k] || 0; const over = Math.max(0, n - s.free); cost += over * s.price / 1000;
+    const pct = isFinite(s.free) ? Math.min(100, n / s.free * 100) : 0;
+    return h('div', { class: 'usage-row' },
+      h('div', { class: 'spread' }, h('span', null, s.label, h('span', { class: 'muted small' }, ' · ' + s.sku)),
+        h('span', { class: 'mono small' }, n.toLocaleString('fr-FR') + (isFinite(s.free) ? ' / ' + s.free.toLocaleString('fr-FR') : ' · gratuit'))),
+      isFinite(s.free) ? h('div', { class: 'usage-bar' }, h('span', { style: 'width:' + pct.toFixed(1) + '%' + (pct > 80 ? ';background:var(--warn)' : '') })) : null,
+      h('div', { class: 'muted small' }, 'Aujourd’hui : ' + t + (s.day ? ' / ' + s.day + ' (plafond quotidien)' : '')));
+  });
+  const nav = navUsage();
+  rows.push(h('div', { class: 'usage-row' }, h('div', { class: 'spread' }, h('span', null, 'Trajets NAVITIME', h('span', { class: 'muted small' }, ' · RapidAPI')),
+    h('span', { class: 'mono small' }, nav + ' / ' + navQuota())), h('div', { class: 'usage-bar' }, h('span', { style: 'width:' + Math.min(100, nav / navQuota() * 100).toFixed(1) + '%' }))));
+  return [
+    h('div', { class: 'small' }, 'Ce mois-ci (' + fmtDay(monthKey() + '-01', { month: 'long', year: 'numeric' }) + '), tous appareils confondus.'),
+    ...rows,
+    h('div', { class: cost > 0 ? 'banner warn' : 'small' }, cost > 0 ? 'Estimation au-delà de la gratuité : environ ' + cost.toFixed(2).replace('.', ',') + ' $ ce mois-ci.' : 'Estimation de facturation : 0 $ (tout reste dans la gratuité mensuelle).'),
+    h('div', { class: 'muted small' }, 'Compté par Tabi depuis le 31/10/2026 : c’est une estimation (les recherches suivies d’un ajout peuvent être gratuites, les appels hors Tabi ne sont pas comptés). Les chiffres qui font foi sont dans Google Cloud.'),
+    h('div', { class: 'row' },
+      h('a', { class: 'btn', href: 'https://console.cloud.google.com/google/maps-apis/metrics?project=tabi-513210', target: '_blank', rel: 'noopener' }, 'Consommation réelle'),
+      h('a', { class: 'btn', href: 'https://console.cloud.google.com/billing/linkedaccount?project=tabi-513210', target: '_blank', rel: 'noopener' }, 'Facturation'))];
+}
 function navChosen(g){ const N = g.L && g.L.nav; return N && N.chosen != null && N.sig === legSig(g.a, g.b, []) ? N.routes[N.chosen] || null : null; }
 const MOVE_FR = { walk: 'à pied', local_train: 'omnibus', rapid_train: 'rapide', semiexpress_train: 'semi-express', express_train: 'express', ultraexpress_train: 'limited express', superexpress_train: 'Shinkansen', sleeper_ultraexpress: 'train de nuit', local_bus: 'bus', highway_bus: 'bus express', shuttle_bus: 'navette', ferry: 'ferry', domestic_flight: 'avion', car: 'voiture', bicycle: 'vélo' };
 function navDefaultTime(a){
@@ -1212,7 +1264,7 @@ function gEmbedUrl(a, b, mode, via){
 }
 function openGmap(a, b, mode, via){
   if (!S.online){ toast('Carte Google disponible en ligne uniquement.'); return; }
-  let cur = mode;
+  let cur = mode; bumpG('emb');
   openSheet(close => {
     const frame = h('iframe', { class: 'gmap', src: gEmbedUrl(a, b, cur, via), loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin', allowfullscreen: true, title: 'Itinéraire Google Maps' });
     const segs = ['transit', 'walk', 'taxi'].map(m => h('button', { class: 'seg' + (m === cur ? ' on' : ''), type: 'button', onclick: e => {
@@ -1314,7 +1366,7 @@ function openPlaceForm(init){
   const pickGoogle = async r => {
     st.searching = true; S.sheet.render();
     try {
-      const d = await googlePlace(gKey(), r.id, st.session);
+      bumpG('det'); const d = await googlePlace(gKey(), r.id, st.session);
       st.coords = { lat: +(+d.lat).toFixed(6), lng: +(+d.lng).toFixed(6), coordSource: 'google' };
       st.v.name = d.name || r.name; st.v.city = d.city || st.v.city; st.v.address = d.address; st.v.kind = kindFromGoogle(d.types.length ? d.types : r.types);
       st.gid = d.id; st.mapsUrl = d.mapsUrl; st.picked = d; st.results = null; st.session = uid() + uid();
@@ -1339,7 +1391,7 @@ function openPlaceForm(init){
     // 1. Google (si une clé est enregistrée) ; la raison d'un refus est affichée sous les résultats.
     if (!gKey()) st.gErr = 'pas de clé Google enregistrée dans les réglages';
     else {
-      try { st.results = await googleAutocomplete(gKey(), q, biasPoint(), st.session); st.engine = 'google'; }
+      try { bumpG('ac'); st.results = await googleAutocomplete(gKey(), q, biasPoint(), st.session); st.engine = 'google'; }
       catch (e){
         console.warn('Tabi Places', e);
         st.gErr = e.status === 403 ? 'clé refusée : ajoute « Places API (New) » aux API autorisées de la clé'
@@ -1776,7 +1828,8 @@ function openTripSheet(){
       (() => { const f = h('form', { class: 'row', style: 'flex-wrap:nowrap', onsubmit: async e => { e.preventDefault(); const v = f.querySelector('input').value.trim(); f.querySelector('input').blur();
           await save({ id: 'config', type: 'config', mapsEmbedKey: v || null }, v ? 'Clé enregistrée dans le Drive' : 'Clé retirée'); } },
         h('input', { type: 'text', id: 'cfg-gkey', value: gKey(), placeholder: 'Clé Maps Embed API (AIza…)', autocomplete: 'off', style: 'flex:1' }), h('button', { class: 'btn', type: 'submit' }, 'Enregistrer')); return f; })(),
-      h('div', { class: 'muted small' }, 'La clé est rangée dans le dossier Drive du voyage, pas dans le code public. Restreinte au site Tabi et à la seule API Maps Embed.')),
+      h('div', { class: 'muted small' }, 'La clé est rangée dans le dossier Drive du voyage, pas dans le code public. Restreinte au site Tabi et aux API Maps Embed, Maps JavaScript et Places (New).')),
+    h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Consommation Google et NAVITIME'), ...usagePanel()),
     h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Carte hors ligne'),
       h('div', { class: 'small' }, 'Télécharge le fond de carte autour de tous les lieux du voyage, à faire en Wi-Fi avant le départ.'),
       h('div', null, h('button', { class: 'btn', type: 'button', onclick: openOfflinePrep }, 'Préparer la carte hors ligne'))),
