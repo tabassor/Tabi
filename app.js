@@ -316,6 +316,7 @@ function renderAll(){
   const main = $('#main');
   if (typingIn(main) || typingIn($('#sheetRoot'))){ S.deferred = true; return; }
   const y = window.scrollY;
+  main.dataset.view = S.view; document.body.dataset.view = S.view;
   main.replaceChildren(...renderMain().flat(Infinity).filter(x => x != null && x !== false));
   if (S.view === 'jour' || S.view === 'itin') updateMap();
   if (S.sheet) S.sheet.render();
@@ -730,7 +731,7 @@ function renderHeader(){
   if (days.dataset.sig === sig) return;
   days.dataset.sig = sig;
   days.replaceChildren(...ds.map((d, i) => { const n = placesOf(d).length;
-    return h('button', { class: 'day' + (d === td ? ' today' : ''), role: 'tab', 'aria-current': String(d === cur), onclick: () => { S.day = d; renderAll(); } },
+    return h('button', { class: 'day' + (d === td ? ' today' : ''), role: 'tab', style: '--c:' + dayColor(i), 'aria-current': String(d === cur), onclick: () => switchDay(d) },
       h('b', null, fmtDay(d, { weekday: 'short', day: 'numeric' })), h('i', null, 'J' + (i + 1) + (n ? ' · ' + n : ''))); }));
   const el = days.querySelector('[aria-current="true"]'); if (el) el.scrollIntoView({ inline: 'center', block: 'nearest' });
 }
@@ -742,16 +743,28 @@ const ICONS = {
   claude: 'M4 5h16v11H9l-5 4z M8 9h8M8 12h5',
   itin: 'M5 4h14M5 9h14M5 14h9M5 19h6M17 13l3 3-3 3M14 16h6',
 };
+const TABS = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', 'Résas'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', 'Claude']];
+// Barre d'onglets flottante : construite une fois, puis mise à jour ; la pastille glisse sous l'onglet actif.
 function renderTabs(){
-  const nS = all('place').filter(p => p.status === 'suggested').length;
-  const nA = S.account && trip() ? attentionCount() : 0;
-  const tabs = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', nA ? 'Résas · ' + nA : 'Résas'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', nS ? 'Claude · ' + nS : 'Claude']];
-  $('#tabs').replaceChildren(...tabs.map(([k, l]) => {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true');
-    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', ICONS[k]); svg.append(p);
-    return h('button', { type: 'button', 'aria-current': String(S.view === k), onclick: () => { S.view = k; LS.set('tabi.view', k); window.scrollTo(0, 0); renderAll(); } }, svg, l);
-  }));
+  const nav = $('#tabs');
+  if (!nav.dataset.built){
+    nav.dataset.built = '1';
+    nav.replaceChildren(h('span', { class: 'tab-ind', 'aria-hidden': 'true' }), ...TABS.map(([k, l]) => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true');
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', ICONS[k]); svg.append(p);
+      return h('button', { type: 'button', 'data-k': k, onclick: () => switchView(k) }, h('span', { class: 'tab-ic' }, svg, h('b', { class: 'badge', hidden: true })), h('span', { class: 'tab-l' }, l));
+    }));
+  }
+  const counts = { resa: S.account && trip() ? attentionCount() : 0, claude: all('place').filter(p => p.status === 'suggested').length };
+  const idx = Math.max(0, TABS.findIndex(([k]) => k === S.view));
+  nav.style.setProperty('--i', idx);
+  nav.querySelectorAll('button').forEach(btn => {
+    const k = btn.dataset.k, n = counts[k] || 0, badge = btn.querySelector('.badge');
+    btn.setAttribute('aria-current', String(S.view === k));
+    badge.hidden = !n; badge.textContent = n > 9 ? '9+' : String(n);
+    btn.setAttribute('aria-label', TABS.find(t => t[0] === k)[1] + (n ? ' (' + n + ')' : ''));
+  });
 }
 
 /* ================= vues ================= */
@@ -759,7 +772,7 @@ function renderMain(){
   if (!CONFIG.clientId) return [welcome('config')];
   if (!S.account) return [welcome('login')];
   if (!trip()){
-    if (S.sync === 'busy' || (!S.lastSync && hasToken())) return [h('div', { class: 'empty' }, h('span', { class: 'spin' }), 'Lecture du dossier Drive…')];
+    if (S.sync === 'busy' || (!S.lastSync && hasToken())) return [h('div', { class: 'panel skel-wrap', 'aria-busy': 'true', 'aria-label': 'Lecture du dossier Drive' }, [70, 45, 85, 55].map(w => h('div', { class: 'skel-row' }, h('span', { class: 'skel skel-dot' }), h('span', { class: 'skel', style: 'width:' + w + '%' }))))];
     if (S.syncErr) return [h('div', { class: 'panel empty' }, h('h3', null, 'Dossier inaccessible'), h('span', null, S.syncErr))];
     if (!S.lastSync) return [h('div', { class: 'panel empty' }, h('h3', null, 'Première synchronisation'), h('span', null, 'Touche « Synchroniser » en haut pour lire le dossier Drive.'))];
     return [tripForm(true)];
@@ -788,7 +801,29 @@ function welcome(kind){
 /* ---- Itinéraire : vue d'ensemble du voyage ---- */
 const DAY_COLORS = ['#6338B0', '#0F7C8F', '#B4532A', '#2B7A57', '#2F6DB5', '#A8326E', '#7A6A12', '#4B5BA8', '#C0392B', '#11806A'];
 const dayColor = i => DAY_COLORS[i % DAY_COLORS.length];
-function goDay(d){ S.day = d; S.view = 'jour'; LS.set('tabi.view', 'jour'); M.focus = null; M.sig = ''; window.scrollTo(0, 0); renderAll(); }
+function goDay(d){ transit(() => { S.day = d; S.view = 'jour'; LS.set('tabi.view', 'jour'); M.focus = null; M.sig = ''; window.scrollTo(0, 0); }, 'fade'); }
+// Transitions entre vues : API View Transitions du navigateur quand elle existe (glissement latéral entre jours,
+// fondu entre onglets), sinon simple apparition en cascade. Rien si le téléphone demande moins d'animations.
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+let enterT = 0;
+function markEnter(){
+  const main = $('#main'); if (!main || reducedMotion()) return;
+  main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter');
+  main.querySelectorAll('.itin-day, .stops[data-day] > *, .bk, .tl-item').forEach((el, i) => el.style.setProperty('--k', Math.min(i, 14)));
+  clearTimeout(enterT); enterT = setTimeout(() => main.classList.remove('enter'), 900);
+}
+function transit(change, dir){
+  const run = () => { change(); renderAll(); markEnter(); };
+  if (!document.startViewTransition || reducedMotion()){ run(); return; }
+  document.documentElement.dataset.vt = dir || 'fade';
+  const t = document.startViewTransition(() => { change(); renderAll(); });
+  t.finished.finally(() => { delete document.documentElement.dataset.vt; });
+}
+function switchDay(d){
+  const cur = currentDay(); if (d === cur) return;
+  transit(() => { S.day = d; }, cur && d < cur ? 'prev' : 'next');
+}
+function switchView(k){ if (S.view === k){ window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' }); return; } transit(() => { S.view = k; LS.set('tabi.view', k); window.scrollTo(0, 0); }, 'fade'); }
 function viewItin(){
   const t = trip(); const ds = tripDays(); const td = todayIso();
   const allP = places().filter(p => p.day && ds.includes(p.day));
@@ -826,7 +861,7 @@ function viewItin(){
         h('div', { class: 'stats small' }, h('div', null, h('b', null, allP.length), 'lieux prévus'), h('div', null, h('b', null, allP.filter(p => p.status === 'visited').length), 'visités'),
           h('div', null, h('b', null, hotelStays().length), 'hôtels'), h('div', null, h('b', null, bookings().filter(b => b.kind !== 'hotel').length), 'autres résas')),
         h('div', { class: 'itin-list' }, cards),
-        ideas ? h('button', { class: 'btn', type: 'button', onclick: () => { S.view = 'idees'; LS.set('tabi.view', 'idees'); renderAll(); } }, ideas + ' idée' + (ideas > 1 ? 's' : '') + ' pas encore placée' + (ideas > 1 ? 's' : '')) : null))
+        ideas ? h('button', { class: 'btn', type: 'button', onclick: () => switchView('idees') }, ideas + ' idée' + (ideas > 1 ? 's' : '') + ' pas encore placée' + (ideas > 1 ? 's' : '')) : null))
   ];
 }
 function updateOverview(){
@@ -898,7 +933,7 @@ function viewDay(){
   const endA = seq[seq.length - 1];
   if (A.end && endA === A.end && seq.length > 1){ const f = seq[seq.length - 2]; rows.push(legRow(f, A.end)); rows.push(anchorRow(A.end, A.start && A.end.bookingId === A.start.bookingId ? 'Retour' : 'Nuit', f, false, col)); }
   else if (A.end && !ps.length && !A.start) rows.push(anchorRow(A.end, 'Nuit', null, false, col));
-  const list = h('div', { class: 'stops', 'data-day': day }, rows);
+  const list = h('div', { class: 'stops', 'data-day': day, style: '--c:' + col }, rows);
   return [
     h('div', { class: 'split' },
       h('div', { class: 'map-col' }, mapPanel()),
@@ -937,8 +972,8 @@ function stopRow(p, i, from){
   const linked = bookings().filter(b => b.placeId === p.id);
   return h('div', { class: 'stop' + (st === 'skipped' ? ' skipped' : ''), 'data-id': p.id },
     h('span', { class: 'grip', title: 'Glisser pour réordonner', 'aria-label': 'Déplacer ' + p.name, role: 'button', tabindex: '0', onpointerdown: e => startDrag(e, p.id), onkeydown: e => keyMove(e, p) }, '⋮⋮'),
-    h('button', { class: 'stamp' + (st === 'visited' ? ' done' : '') + (st === 'skipped' ? ' skip' : ''), type: 'button', 'aria-label': st === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité', onclick: () => toggleVisit(p) },
-      st === 'visited' ? h('span', null, 'VU', h('br'), p.visitedAt ? fmtTime(p.visitedAt) : '') : String(i + 1)),
+    h('button', { class: 'stamp' + (st === 'visited' ? ' done' : '') + (st === 'skipped' ? ' skip' : '') + (justStamped === p.id ? ' press' : ''), type: 'button', 'aria-label': st === 'visited' ? 'Retirer le tampon' : 'Tamponner : visité', onclick: () => toggleVisit(p) },
+      st === 'visited' ? [h('b', { class: 'hk' }, '済'), p.visitedAt ? h('span', { class: 'hk-t' }, fmtTime(p.visitedAt)) : null] : String(i + 1).padStart(2, '0')),
     h('div', { class: 'body', onclick: () => openPlace(p.id), role: 'button', tabindex: '0', onkeydown: e => { if (e.key === 'Enter') openPlace(p.id); } },
       h('div', { class: 'name' }, p.time ? h('span', { class: 'mono muted', style: 'font-weight:600;margin-right:6px' }, p.time) : null, p.name),
       h('div', { class: 'meta' }, kindChip(p.kind),
@@ -958,7 +993,7 @@ function stopRow(p, i, from){
 function eventRow(e, i, from){
   const open = () => openBooking(e.bookingId);
   return h('div', { class: 'stop ev' }, h('span'),
-    h('button', { class: 'stamp ev', type: 'button', title: 'Réservation', 'aria-label': 'Ouvrir la réservation ' + e.name, onclick: open }, String(i + 1)),
+    h('button', { class: 'stamp ev', type: 'button', title: 'Réservation', 'aria-label': 'Ouvrir la réservation ' + e.name, onclick: open }, String(i + 1).padStart(2, '0')),
     h('div', { class: 'body', onclick: open, role: 'button', tabindex: '0', onkeydown: k => { if (k.key === 'Enter') open(); } },
       h('div', { class: 'name' }, e.time ? h('span', { class: 'mono muted', style: 'font-weight:600;margin-right:6px' }, e.time) : null, e.name),
       h('div', { class: 'meta' }, kindChip(e.kind), h('span', { class: 'chip solid' }, 'Réservé'),
@@ -967,8 +1002,10 @@ function eventRow(e, i, from){
     from && hasPos(from) && hasPos(e) ? h('a', { class: 'btn ghost', href: legUrlFor(from, e), target: '_blank', rel: 'noopener', 'aria-label': 'Google Maps vers ' + e.name }, 'Y aller')
       : (hasPos(e) || e.address ? h('a', { class: 'btn ghost', href: placeUrl(e), target: '_blank', rel: 'noopener' }, 'Maps') : h('span')));
 }
+let justStamped = null, stampT = 0;
 async function toggleVisit(p){
   const v = p.status === 'visited';
+  if (!v){ justStamped = p.id; clearTimeout(stampT); stampT = setTimeout(() => { justStamped = null; }, 900); try { navigator.vibrate && navigator.vibrate([18, 40, 28]); } catch {} }
   await save({ id: p.id, status: v ? 'planned' : 'visited', visitedAt: v ? null : new Date().toISOString(), visitedBy: v ? null : meName() }, v ? 'Tampon retiré' : 'Tamponné · ' + p.name);
 }
 
@@ -2084,7 +2121,7 @@ function viewMemories(){
   const ds = tripDays(); const ps = places().filter(p => p.day); const visited = ps.filter(p => p.status === 'visited');
   const photos = all('media').filter(m => m.role === 'photo');
   const out = [
-    h('div', null, h('div', { class: 'eyebrow' }, 'Le voyage tel qu’il s’est passé'), h('h2', null, 'Souvenirs')),
+    h('div', { class: 'mem-head' }, h('div', null, h('div', { class: 'eyebrow' }, 'Le voyage tel qu’il s’est passé'), h('h2', null, 'Souvenirs')), h('span', { class: 'seal', 'aria-hidden': 'true' }, '旅')),
     h('div', { class: 'panel', style: 'padding:12px' }, h('div', { class: 'stats' },
       h('div', null, h('b', null, visited.length), 'lieux visités'), h('div', null, h('b', null, ps.length), 'prévus'),
       h('div', null, h('b', null, ps.filter(p => p.addedDuring).length), 'ajoutés en route'), h('div', null, h('b', null, ps.filter(p => p.status === 'skipped').length), 'pas faits'),
@@ -2224,15 +2261,33 @@ let confirmArmed = 0;
 function confirmTwice(){ if (Date.now() - confirmArmed < 4000) return true; confirmArmed = Date.now(); toast(S.pendingCount + ' modification(s) pas encore envoyée(s) seraient perdues. Touche encore pour confirmer.'); return false; }
 
 /* ---- panneaux ---- */
+// Panneaux du bas : entrée à ressort, fermeture animée (bouton, fond, Échap) ou d'un geste vers le bas sur l'en-tête.
 function openSheet(builder, once){
   const root = $('#sheetRoot');
-  const close = () => { S.sheet = null; root.replaceChildren(); document.removeEventListener('keydown', esc); };
+  let first = true, closing = false;
+  const finish = () => { if (S.sheet === st) S.sheet = null; root.replaceChildren(); document.removeEventListener('keydown', esc); };
+  const close = instant => {
+    if (closing) return; closing = true; document.removeEventListener('keydown', esc);
+    const scrim = root.querySelector('.scrim');
+    if (instant === true || !scrim || reducedMotion()){ finish(); return; }
+    if (S.sheet === st) S.sheet = null;
+    scrim.classList.add('leaving'); setTimeout(() => { if (!S.sheet) root.replaceChildren(); }, 220);
+  };
   const esc = e => { if (e.key === 'Escape') close(); };
-  if (S.sheet) S.sheet.close();
+  if (S.sheet) S.sheet.close(true);
   document.addEventListener('keydown', esc);
-  const st = { close, render(){ if (once && root.firstChild) return; if (typingIn(root)){ S.deferred = true; return; } const top = (root.querySelector('.sheet') || {}).scrollTop || 0; const c = builder(close); if (!c){ close(); return; }
-    root.replaceChildren(h('div', { class: 'scrim', onclick: e => { if (e.target === e.currentTarget) close(); } }, c)); const sh = root.querySelector('.sheet'); if (sh) sh.scrollTop = top; } };
+  const st = { close, render(){ if (closing) return; if (once && root.firstChild) return; if (typingIn(root)){ S.deferred = true; return; } const top = (root.querySelector('.sheet') || {}).scrollTop || 0; const c = builder(close); if (!c){ close(true); return; }
+    root.replaceChildren(h('div', { class: 'scrim' + (first ? ' enter' : ''), onclick: e => { if (e.target === e.currentTarget) close(); } }, c)); first = false;
+    const sh = root.querySelector('.sheet'); if (sh){ sh.scrollTop = top; dragToClose(sh, close); } } };
   S.sheet = st; st.render();
+}
+function dragToClose(sh, close){
+  const head = sh.querySelector('.sheet-head'); if (!head) return;
+  let y0 = null, dy = 0;
+  head.addEventListener('pointerdown', e => { if (e.target.closest('button, a, input, select')) return; y0 = e.clientY; dy = 0; sh.style.transition = 'none'; head.setPointerCapture(e.pointerId); });
+  head.addEventListener('pointermove', e => { if (y0 == null) return; dy = Math.max(0, e.clientY - y0); sh.style.transform = `translateY(${dy}px)`; });
+  const end = () => { if (y0 == null) return; y0 = null; sh.style.transition = ''; if (dy > 90) close(); else sh.style.transform = ''; };
+  head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
 }
 const sheetHead = (title, close) => h('div', { class: 'sheet-head' }, h('h2', null, title), h('button', { class: 'btn ghost', type: 'button', onclick: close, 'aria-label': 'Fermer' }, 'Fermer'));
 

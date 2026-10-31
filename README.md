@@ -49,6 +49,18 @@ Le mode auto choisit la marche si le trajet à pied dure au plus `trip.walkMax` 
 - **Bagages** : type de réservation `bagages` (takkyūbin).
 - **Récap** dans l'onglet Claude (éléments `recap`).
 
+## Identité graphique (v21)
+
+Base « ligne de train » (signalétique ferroviaire japonaise) et touche « washi et hanko » :
+
+- **Journée** : les étapes sont les arrêts d'une ligne à la couleur du jour (numéros 01, 02…), les trajets en font partie ; le tampon de visite est un sceau vermillon 済 avec l'heure, posé avec une animation et une courte vibration (Android).
+- **Navigation** : barre d'onglets flottante, pastille qui glisse sous l'onglet actif, compteurs rouges ; glissement latéral entre jours et fondu entre onglets (API View Transitions, sinon apparition en cascade).
+- **Panneaux** : poignée, entrée à ressort, fermeture animée ou d'un geste vers le bas sur l'en-tête.
+- **Souvenirs** : papier washi, titres en Shippori Mincho, sceau 旅.
+- **Chargement** : silhouettes grisées. Toutes les animations sont coupées si le téléphone demande moins de mouvements.
+
+Jetons de couleur en tête de la couche « refonte v21 » de `style.css` (`--stamp` = accent sarcelle, `--hanko` = vermillon, `--washi`).
+
 ## Développement
 
 Fichiers statiques, sans compilation. Tester en local : `python3 -m http.server 8000` puis http://localhost:8000 (origine autorisée dans Google Cloud).

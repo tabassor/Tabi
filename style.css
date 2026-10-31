@@ -1,4 +1,6 @@
-/* Tabi — carnet de voyage. Tampon d'eki (violet) pour ce qui est visité, encre pour les hôtels. */
+/* Tabi — carnet de voyage. Base « ligne de train » (signalétique ferroviaire japonaise, une couleur par jour),
+   touche « washi et hanko » pour le tampon de visite et les souvenirs. La couche « refonte v21 » en fin de fichier
+   redéfinit les jetons et les composants principaux. */
 :root{
   --paper:#EEF1F5; --surface:#FFFFFF; --ink:#1A2340; --muted:#5B6480; --line:#D6DCE6;
   --stamp:#6338B0; --stamp-soft:#EDE6F8; --ok:#2B7A57; --warn:#A86A12; --danger:#B3363A; --route:#8A93AB;
@@ -269,3 +271,149 @@ input[type=tel]{border:1px solid var(--line);background:var(--paper);border-radi
 .present-conf{font-size:26px;font-weight:600;letter-spacing:.04em;text-align:center;overflow-wrap:anywhere}
 .present-hint{color:#555}
 .present-pdf{text-align:center;max-width:420px;display:flex;flex-direction:column;gap:10px;align-items:center;margin:auto 0}
+
+
+/* ================= refonte v21 : ligne de train + hanko ================= */
+:root{
+  --paper:#F3F4F6; --surface:#FFFFFF; --ink:#111827; --muted:#6B7280; --line:#E5E7EB;
+  --stamp:#0B7A75; --stamp-soft:#E1F1F0; --ok:#1F7A4D; --warn:#B45309; --danger:#B42318; --route:#9CA3AF;
+  --hanko:#B23A2A; --hanko-soft:#F6E1DC; --washi:#F5EFE4; --washi-line:#E2D7C3; --washi-panel:#FBF7F0;
+  --f-serif:"Shippori Mincho","Hiragino Mincho ProN","Yu Mincho",serif;
+  --r:16px; --tabs-h:64px;
+  --ease:cubic-bezier(.2,.8,.2,1); --spring:cubic-bezier(.3,1.35,.5,1);
+  --shadow:0 1px 2px rgba(17,24,39,.06),0 4px 14px rgba(17,24,39,.06);
+  --shadow-up:0 10px 30px rgba(17,24,39,.16),0 2px 6px rgba(17,24,39,.08);
+}
+@media (prefers-color-scheme: dark){:root{
+  --paper:#0E1116; --surface:#171B22; --ink:#E8EAEE; --muted:#9AA1AD; --line:#262C36;
+  --stamp:#3FB8B0; --stamp-soft:#14302F; --ok:#4CC38A; --warn:#E9A23B; --danger:#F07167; --route:#5B6472;
+  --hanko:#E0705F; --hanko-soft:#3A1F1A; --washi:#17140F; --washi-line:#332C22; --washi-panel:#1F1B15;
+  --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-up:0 10px 30px rgba(0,0,0,.55)}}
+
+body{transition:background-color .35s var(--ease)}
+.panel{border-radius:var(--r);border-color:var(--line);box-shadow:var(--shadow)}
+h2{font-size:21px;letter-spacing:-.01em}
+.eyebrow{letter-spacing:.06em}
+.btn{border-radius:12px;min-height:40px;padding:8px 14px;transition:transform .15s var(--ease),background-color .2s,border-color .2s,box-shadow .2s}
+.btn:active{transform:scale(.97)}
+.btn.primary{box-shadow:0 2px 8px color-mix(in srgb,var(--stamp) 35%,transparent)}
+.btn.ghost{min-height:34px}
+.btn.small{min-height:30px;border-radius:9px}
+.chip{border-radius:7px;padding:2px 8px}
+input[type=text],input[type=date],input[type=time],input[type=url],input[type=search],input[type=tel],select,textarea{border-radius:11px;padding:10px 12px;transition:border-color .2s,box-shadow .2s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--stamp);box-shadow:0 0 0 3px var(--stamp-soft)}
+.banner{border-radius:12px}
+
+/* en-tête : bande des jours, couleur de ligne du jour sélectionné */
+header.top{border-bottom:0;box-shadow:0 1px 0 var(--line)}
+.brand small{color:var(--hanko);font-family:var(--f-serif)}
+.day{border-radius:12px;padding:6px 12px;transition:background-color .25s var(--ease),color .25s,border-color .25s,transform .2s var(--spring)}
+.day:active{transform:scale(.95)}
+.day[aria-current="true"]{background:var(--c,var(--ink));border-color:var(--c,var(--ink));color:#fff;box-shadow:0 3px 10px color-mix(in srgb,var(--c,#000) 35%,transparent)}
+.sync,.trip-btn{transition:background-color .2s,border-color .2s}
+
+/* barre d'onglets flottante */
+main{padding-bottom:calc(var(--tabs-h) + 40px + env(safe-area-inset-bottom,0px))}
+nav.tabs{left:max(10px,env(safe-area-inset-left,0px));right:max(10px,env(safe-area-inset-right,0px));bottom:calc(10px + env(safe-area-inset-bottom,0px));padding:6px;border:1px solid var(--line);border-radius:24px;
+  background:color-mix(in srgb,var(--surface) 88%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);backdrop-filter:saturate(1.6) blur(14px);box-shadow:var(--shadow-up);max-width:620px;margin:0 auto}
+nav.tabs button{position:relative;z-index:1;border-radius:18px;padding:6px 1px 5px;gap:1px;font-size:10.5px;transition:color .25s var(--ease)}
+nav.tabs button svg{width:22px;height:22px;transition:transform .3s var(--spring)}
+nav.tabs button[aria-current="true"] svg{transform:translateY(-1px) scale(1.08)}
+nav.tabs button:active svg{transform:scale(.88)}
+.tab-ic{position:relative;display:grid;place-items:center}
+.tab-l{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.badge{position:absolute;top:-4px;right:-10px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--hanko);color:#fff;font:700 10.5px/17px var(--f-body);border:2px solid var(--surface);animation:pop .35s var(--spring)}
+.tab-ind{position:absolute;z-index:0;top:6px;bottom:6px;left:6px;width:calc((100% - 12px) / 6);border-radius:18px;background:var(--stamp-soft);transform:translateX(calc(var(--i,0) * 100%));transition:transform .45s var(--spring)}
+.toast{border-radius:14px;bottom:calc(var(--tabs-h) + 26px + env(safe-area-inset-bottom,0px));box-shadow:var(--shadow-up);animation:toastIn .35s var(--spring)}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,12px) scale(.96)}}
+
+/* étapes du jour : ligne de train à la couleur du jour, arrêts numérotés */
+.stops[data-day] .stop{border-top:0;background:transparent}
+.stops[data-day] > .stop::before{content:"";position:absolute;left:51px;width:6px;top:0;bottom:0;background:var(--c,var(--stamp));z-index:0}
+.stops[data-day] > .stop:first-child::before{top:50%}
+.stops[data-day] > .stop:last-child::before{bottom:50%}
+.stops[data-day] > .stop:only-child::before{display:none}
+.stops[data-day] .leg-line::before{border-left:0;width:6px;left:calc(50% - 3px);background:var(--c,var(--stamp))}
+.stops[data-day] .leg-line svg{border:2px solid var(--c,var(--stamp));width:22px;height:22px;stroke-width:2}
+.stamp{position:relative;z-index:1;width:40px;height:40px;transition:transform .3s var(--spring),background-color .25s,border-color .25s,color .25s}
+.stops[data-day] .stamp:not(.hotel){background:var(--surface);border:3px solid var(--c,var(--stamp));color:var(--c,var(--stamp));font:700 12.5px var(--f-mono)}
+.stops[data-day] .stamp.hotel{background:var(--surface);border-width:3px}
+.stamp:active{transform:scale(.9)}
+.stops[data-day] .stamp.skip{border-color:var(--route);color:var(--route);opacity:1;background:var(--paper)}
+/* tampon hanko : vermillon, légèrement de travers, comme un sceau à l'encre */
+.stops[data-day] .stamp.done,.stamp.done{background:var(--hanko-soft);border:2px solid var(--hanko);color:var(--hanko);border-radius:50%;transform:rotate(-9deg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;line-height:1}
+.stamp .hk{font:700 17px/1 var(--f-serif)}
+.stamp .hk-t{font:600 8.5px/1 var(--f-mono);margin-top:1px}
+.stamp.press{animation:hankoPress .5s var(--ease) both}
+.stamp.press::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid var(--hanko);animation:inkRing .7s .15s var(--ease) both;pointer-events:none}
+@keyframes hankoPress{0%{transform:scale(1.7) rotate(-24deg);opacity:0}55%{transform:scale(.9) rotate(-8deg);opacity:1}75%{transform:scale(1.04) rotate(-10deg)}100%{transform:scale(1) rotate(-9deg)}}
+@keyframes inkRing{0%{opacity:.7;transform:scale(1)}100%{opacity:0;transform:scale(1.55)}}
+.stop .name{font-size:16px}
+.stop .body{transition:opacity .2s}
+.stop .body:active{opacity:.6}
+.leg-btn{border-radius:10px;transition:background-color .2s}
+
+/* listes : réservations, itinéraire */
+.bk{transition:background-color .2s}
+.bk:active{background:var(--paper)}
+.itin-day{border-radius:var(--r);box-shadow:var(--shadow);transition:transform .2s var(--spring),border-color .2s,box-shadow .2s}
+.itin-day:active{transform:scale(.985)}
+.itin-day.today{border-color:var(--stamp);box-shadow:0 0 0 2px var(--stamp-soft),var(--shadow)}
+.itin-bar{width:5px;border-radius:0}
+.sugg{border-radius:var(--r);border-color:color-mix(in srgb,var(--stamp) 50%,transparent)}
+
+/* panneaux du bas */
+.scrim{background:rgba(9,12,18,.42);-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+.scrim.enter{animation:fadeIn .25s var(--ease)}
+.scrim.enter .sheet{animation:sheetIn .45s var(--spring)}
+.scrim.leaving{animation:fadeOut .22s var(--ease) forwards}
+.scrim.leaving .sheet{animation:sheetOut .22s var(--ease) forwards}
+.sheet{border-radius:24px 24px 0 0;box-shadow:var(--shadow-up);transition:transform .3s var(--spring);overscroll-behavior:contain}
+.sheet-head{padding-top:18px;border-bottom-color:transparent;touch-action:none;cursor:grab}
+.sheet-head::before{content:"";position:absolute;top:7px;left:50%;width:38px;height:5px;margin-left:-19px;border-radius:3px;background:var(--line)}
+.sec + .sec{border-top:1px solid var(--line);margin-top:14px}
+@keyframes fadeIn{from{opacity:0}} @keyframes fadeOut{to{opacity:0}}
+@keyframes sheetIn{from{transform:translateY(100%)}} @keyframes sheetOut{to{transform:translateY(100%)}}
+@keyframes pop{0%{transform:scale(.4)}70%{transform:scale(1.15)}100%{transform:scale(1)}}
+
+/* apparition en cascade après un changement de vue */
+@keyframes rise{from{opacity:0;transform:translateY(10px)}}
+main.enter > *{animation:rise .4s var(--ease) both}
+main.enter > :nth-child(2){animation-delay:40ms} main.enter > :nth-child(3){animation-delay:80ms} main.enter > :nth-child(4){animation-delay:120ms}
+main.enter .itin-day,main.enter .stops[data-day] > *,main.enter .bk,main.enter .tl-item{animation:rise .42s var(--ease) both;animation-delay:calc(var(--k,0) * 35ms + 60ms)}
+
+/* transitions natives du navigateur (View Transitions) */
+main{view-transition-name:main} header.top{view-transition-name:top} nav.tabs{view-transition-name:tabs}
+::view-transition-group(main){animation-duration:.32s;animation-timing-function:var(--ease)}
+::view-transition-old(main),::view-transition-new(main){animation-duration:.32s;animation-timing-function:var(--ease)}
+html[data-vt=next]::view-transition-old(main){animation-name:vtOutL} html[data-vt=next]::view-transition-new(main){animation-name:vtInR}
+html[data-vt=prev]::view-transition-old(main){animation-name:vtOutR} html[data-vt=prev]::view-transition-new(main){animation-name:vtInL}
+@keyframes vtOutL{to{opacity:0;transform:translateX(-36px)}} @keyframes vtInR{from{opacity:0;transform:translateX(36px)}}
+@keyframes vtOutR{to{opacity:0;transform:translateX(36px)}} @keyframes vtInL{from{opacity:0;transform:translateX(-36px)}}
+
+/* chargement : silhouettes grisées */
+.skel-wrap{padding:14px;display:flex;flex-direction:column;gap:16px}
+.skel-row{display:flex;align-items:center;gap:12px}
+.skel{display:block;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--line) 0%,var(--paper) 50%,var(--line) 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+.skel-dot{width:40px;height:40px;border-radius:50%;flex:none}
+@keyframes shimmer{to{background-position:-200% 0}}
+
+/* souvenirs : papier washi, encre, sceau */
+body[data-view=souvenirs]{background:var(--washi)}
+main[data-view=souvenirs] .panel{background:var(--washi-panel);border-color:var(--washi-line);box-shadow:none}
+main[data-view=souvenirs] h2,main[data-view=souvenirs] h3{font-family:var(--f-serif);font-weight:700}
+main[data-view=souvenirs] h2{font-size:26px}
+main[data-view=souvenirs] .eyebrow{color:var(--hanko)}
+.mem-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.seal{width:46px;height:46px;flex:none;display:grid;place-items:center;border:2.5px solid var(--hanko);color:var(--hanko);border-radius:9px;font:700 24px/1 var(--f-serif);transform:rotate(-6deg);background:var(--hanko-soft)}
+main[data-view=souvenirs] .tl{border-left-color:var(--washi-line)}
+main[data-view=souvenirs] .tl-item::before{background:var(--washi);border:2px solid var(--hanko);width:12px;height:12px}
+main[data-view=souvenirs] .tl-item.unplanned::before{border-color:var(--warn)}
+main[data-view=souvenirs] .stats b{font-family:var(--f-serif);font-size:20px}
+main[data-view=souvenirs] .thumbs button.th{border-color:var(--washi-line);border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+main[data-view=souvenirs] .note{border-left-color:var(--hanko-soft);font-family:var(--f-serif)}
+
+@media (prefers-reduced-motion: reduce){
+  main{view-transition-name:none}
+  .stamp.done,.seal{transform:none}
+}
