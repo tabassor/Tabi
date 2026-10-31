@@ -20,7 +20,7 @@ Tabi - Japon/
 
 ## Format des éléments (`data/<type>_<id>.json`)
 
-Champs communs : `id` (chaîne unique), `type`, `updatedAt` (ISO), `updatedBy` (prénom).
+Champs communs : `id` (chaîne unique **tous types confondus** : un lieu et sa réservation doivent avoir deux id différents, par ex. `rdv-1223-aiiku` pour le lieu et `bk-rdv-1223-aiiku` pour la réservation ; si deux fichiers partagent un id, l'appli garde l'id pour le lieu et renomme l'autre élément en `<type>-<id>`), `type`, `updatedAt` (ISO), `updatedBy` (prénom).
 
 | type | champs |
 |---|---|

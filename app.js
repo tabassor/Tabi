@@ -138,16 +138,31 @@ async function pull(){
     if (!loc || loc._version !== String(f.version)) todo.push(f);
   }
   let changed = todo.length > 0;
+  const renamed = new Set();
+  // Deux fichiers de types différents portant le même id (ex. un lieu et sa réservation) s'écraseraient
+  // l'un l'autre à chaque synchronisation : le lieu garde l'id, l'autre élément est renommé « <type>-<id> ».
+  const rekey = o => ({ ...o, id: o.type + '-' + o.id });
+  const store = async it => {
+    for (const x of [...S.items.values()]) if (x._fileId === it._fileId && x.id !== it.id){ S.items.delete(x.id); await idb.del('items', x.id); }
+    S.items.set(it.id, it); await idb.put('items', it.id, it);
+  };
   await pool(todo, 6, async f => {
     try {
       const obj = await drive.readJson(f.id);
       if (!obj || typeof obj.id !== 'string' || typeof obj.type !== 'string') return;
-      const loc = S.items.get(obj.id);
-      if (loc && loc._pending) return; // modification locale pas encore envoyée : elle gagne
-      const it = { ...obj, _fileId: f.id, _version: String(f.version), _by: (f.lastModifyingUser && f.lastModifyingUser.displayName) || '' };
-      S.items.set(it.id, it); await idb.put('items', it.id, it);
+      let it = { ...obj, _fileId: f.id, _version: String(f.version), _by: (f.lastModifyingUser && f.lastModifyingUser.displayName) || '' };
+      const loc = S.items.get(it.id);
+      if (loc && loc.type !== it.type && loc._fileId !== f.id){
+        if (it.type === 'place' && loc.type !== 'place'){ const m = rekey(loc); await store(m); renamed.add(m.id); }
+        else { it = rekey(it); renamed.add(it.id); }
+      }
+      const cur = S.items.get(it.id);
+      if (cur && cur._pending && cur.type === it.type) return; // modification locale pas encore envoyée : elle gagne
+      await store(it);
     } catch (e){ if (e.code === 'auth' || e.code === 'network') throw e; console.warn('Tabi: fichier illisible', f.name, e); }
   });
+  // l'id corrigé est réécrit dans le fichier, pour que tous les appareils le voient
+  for (const id of renamed) if (S.items.has(id)) await save({ id });
   for (const it of [...S.items.values()]){
     if (it._fileId && !seen.has(it._fileId) && !it._pending){ S.items.delete(it.id); await idb.del('items', it.id); changed = true; }
   }
