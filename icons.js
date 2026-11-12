@@ -1,6 +1,9 @@
 // Icônes de catégorie (Tabler Icons 3.50, licence MIT, https://tabler.io/icons), embarquées pour fonctionner hors ligne.
 // Une entrée par catégorie : liste des tracés SVG (viewBox 24×24, trait). L'onsen utilise le symbole cartographique ♨.
 export const KIND_ICONS = {
+  facade: ["M3 21l18 0", "M5 21v-14l7 -4l7 4v14", "M9 21v-5a3 3 0 0 1 6 0v5", "M9 10h.01", "M15 10h.01"],
+  ambiance: ["M9 3h6", "M10 3v2", "M14 3v2", "M8 5h8l-1 11h-6z", "M12 16v5", "M9 21h6", "M10 9h4", "M10 12h4"],
+  photo: ["M5 7h1a2 2 0 0 0 2 -2a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2", "M9 13a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"],
   visite: ["M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0", "M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6"],
   temple: ["M4 4c5.333 1.333 10.667 1.333 16 0", "M4 8h16", "M12 5v3", "M18 4.5v15.5", "M6 4.5v15.5"],
   musee: ["M3 21l18 0", "M4 21v-15a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v15", "M9 21v-8a3 3 0 0 1 6 0v8"],

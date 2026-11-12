@@ -5,6 +5,7 @@ import { drive, signIn, hasToken, clearToken } from './drive.js';
 import { idb } from './store.js';
 import { KIND_ICONS } from './icons.js';
 import { walkRoute, transitNear, poisAlong, shapeCoords, navitimeRoutes, translateNames, translateGate, googleAutocomplete, googlePlace, kindFromGoogle, googleNearby, osmNearby, kindFromOsmTags } from './routes.js';
+import { installLieux } from './lieux.js';
 
 /* ================= utilitaires ================= */
 const $ = s => document.querySelector(s);
@@ -37,6 +38,7 @@ const num = v => typeof v === 'number' && isFinite(v) ? v : null;
 async function pool(list, n, fn){ const q = [...list]; await Promise.all(Array.from({ length: Math.min(n, q.length) }, async () => { while (q.length) await fn(q.shift()); })); }
 
 const KINDS = { visite: 'Visite', temple: 'Temple / sanctuaire', musee: 'Musée', expo: 'Exposition', parc: 'Parc / jardin', vue: 'Point de vue',
+  facade: 'Façade / architecture', ambiance: 'Rue / ambiance', photo: 'Spot photo',
   magasin: 'Magasin', resto: 'Restaurant', cafe: 'Café', onsen: 'Onsen / bain', activite: 'Activité', hotel: 'Hôtel', transport: 'Transport', autre: 'Autre' };
 // Icône de catégorie : tracé au trait (icons.js), ou symbole cartographique ♨ pour les onsen.
 function kindIcon(k){
@@ -58,7 +60,7 @@ const money = (n, cur) => !cur || cur === 'JPY' ? yen(n) : n.toLocaleString('fr-
 const S = {
   items: new Map(), account: null, folders: null,
   online: navigator.onLine, sync: 'idle', syncErr: null, lastSync: null, pendingCount: 0,
-  view: LS.get('tabi.view') || 'jour', day: null, sheet: null, deferred: false,
+  view: (v => v === 'idees' ? 'lieux' : v)(LS.get('tabi.view') || 'jour'), day: null, sheet: null, deferred: false,
 };
 // Un élément portant `deleted: true` (pierre tombale) est masqué partout : c'est ainsi que Claude retire un fichier qu'il a créé.
 const all = t => [...S.items.values()].filter(x => x.type === t && !x.deleted);
@@ -328,7 +330,7 @@ function renderAll(){
   const y = window.scrollY;
   main.dataset.view = S.view; document.body.dataset.view = S.view;
   main.replaceChildren(...renderMain().flat(Infinity).filter(x => x != null && x !== false));
-  if (S.view === 'jour' || S.view === 'itin') updateMap();
+  if (S.view === 'jour' || S.view === 'itin' || S.view === 'lieux') updateMap();
   if (S.sheet) S.sheet.render();
   window.scrollTo(0, y);
 }
@@ -465,7 +467,7 @@ function ensureEngine(){
   const eng = want === 'google' ? googleEngine(box) : osmEngine(box);
   M.eng = eng;
 }
-function engineReady(eng){ if (M.eng !== eng) return; M.ready = true; M.msg.hidden = true; M.sig = ''; if (S.view === 'jour' || S.view === 'itin') updateMap(); }
+function engineReady(eng){ if (M.eng !== eng) return; M.ready = true; M.msg.hidden = true; M.sig = ''; if (S.view === 'jour' || S.view === 'itin' || S.view === 'lieux') updateMap(); }
 function mapClicked(c){
   if (!M.placing) return;
   const job = M.placing; M.placing = null; M.banner.hidden = true;
@@ -582,7 +584,7 @@ function googleEngine(box){
 function startPlacing(text, cb){
   if (!M.eng){ toast('Carte indisponible.'); return; }
   if (S.sheet) S.sheet.close();
-  if (S.view !== 'jour'){ S.view = 'jour'; renderAll(); }
+  if (S.view !== 'jour' && S.view !== 'lieux'){ S.view = 'jour'; renderAll(); }
   M.placing = cb;
   M.banner.replaceChildren(h('span', null, text), h('button', { class: 'btn', type: 'button', onclick: () => { M.placing = null; M.banner.hidden = true; } }, 'Annuler'));
   M.banner.hidden = false; M.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -603,6 +605,7 @@ function updateMap(){
   ensureEngine();
   if (!M.eng) return;
   if (S.view === 'itin'){ updateOverview(); return; }
+  if (S.view === 'lieux'){ L.updateLibMap(); return; }
   const day = currentDay();
   mapTools([
     h('button', { class: 'btn', type: 'button', onclick: hereNow }, '📍 Ici'),
@@ -620,6 +623,8 @@ function updateMap(){
   for (const p of ideas) E.marker(markerEl('i k-' + kindKey(p.kind), kindIcon(kindKey(p.kind)), () => openPlace(p.id), 'Idée · ' + (KINDS[p.kind] || 'Autre') + ' : ' + p.name), p);
   if (M.showIdeas) for (const p of all('place').filter(x => x.status === 'suggested' && x.day === day && hasPos(x)))
     E.marker(markerEl('i sg k-' + kindKey(p.kind), kindIcon(kindKey(p.kind)), () => { S.view = 'claude'; LS.set('tabi.view', 'claude'); renderAll(); }, 'Suggestion de Claude · ' + p.name), p);
+  // lieux repérés de la bibliothèque, proches des étapes du jour
+  if (M.showIdeas) L.dayMarkers(E, day);
   pts.forEach(p => {
     const i = ps.indexOf(p);
     E.marker(p.anchor ? (() => { const el = markerEl('h', 'H', () => openBooking(p.bookingId), p.name); const c = dayColor(dayIdx(day)); el.style.background = c; el.style.borderColor = c; el.style.color = '#fff'; return el; })()
@@ -755,8 +760,9 @@ const ICONS = {
   souvenirs: 'M4 7h4l2-2h4l2 2h4v12H4z M12 10a3 3 0 100 6 3 3 0 000-6z',
   claude: 'M4 5h16v11H9l-5 4z M8 9h8M8 12h5',
   itin: 'M5 4h14M5 9h14M5 14h9M5 19h6M17 13l3 3-3 3M14 16h6',
+  lieux: 'M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0113 0c0 5.4-6.5 11-6.5 11z M12 7.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z',
 };
-const TABS = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', 'Résas'], ['idees', 'Idées'], ['souvenirs', 'Souvenirs'], ['claude', 'Claude']];
+const TABS = [['itin', 'Itinéraire'], ['jour', 'Journée'], ['resa', 'Résas'], ['lieux', 'Lieux'], ['souvenirs', 'Souvenirs'], ['claude', 'Claude']];
 // Barre d'onglets flottante : construite une fois, puis mise à jour ; la pastille glisse sous l'onglet actif.
 function renderTabs(){
   const nav = $('#tabs');
@@ -795,7 +801,7 @@ function renderMain(){
   if (S.view === 'jour') out.push(...viewDay());
   else if (S.view === 'itin') out.push(...viewItin());
   else if (S.view === 'resa') out.push(...viewBookings());
-  else if (S.view === 'idees') out.push(...viewIdeas());
+  else if (S.view === 'lieux') out.push(...L.viewLieux());
   else if (S.view === 'souvenirs') out.push(...viewMemories());
   else out.push(...viewClaude());
   return out;
@@ -874,7 +880,7 @@ function viewItin(){
         h('div', { class: 'stats small' }, h('div', null, h('b', null, allP.length), 'lieux prévus'), h('div', null, h('b', null, allP.filter(p => p.status === 'visited').length), 'visités'),
           h('div', null, h('b', null, hotelStays().length), 'hôtels'), h('div', null, h('b', null, bookings().filter(b => b.kind !== 'hotel').length), 'autres résas')),
         h('div', { class: 'itin-list' }, cards),
-        ideas ? h('button', { class: 'btn', type: 'button', onclick: () => switchView('idees') }, ideas + ' idée' + (ideas > 1 ? 's' : '') + ' pas encore placée' + (ideas > 1 ? 's' : '')) : null))
+        ideas ? h('button', { class: 'btn', type: 'button', onclick: () => { L.setMode('idees'); switchView('lieux'); } }, ideas + ' idée' + (ideas > 1 ? 's' : '') + ' pas encore placée' + (ideas > 1 ? 's' : '')) : null))
   ];
 }
 function updateOverview(){
@@ -958,6 +964,7 @@ function viewDay(){
         isNewYear(day) && stops.some(p => NY_KINDS.has(p.kind) && !p.ev) ? h('div', { class: 'banner warn' }, 'Période du Nouvel An : beaucoup de musées, jardins, boutiques et restaurants ferment ou réduisent leurs horaires entre le 29 décembre et le 3 janvier. Vérifie les lieux marqués « Nouvel An ».') : null,
         bks.length ? h('div', { class: 'panel' }, h('div', { class: 'sec', style: 'padding-bottom:4px' }, h('div', { class: 'eyebrow' }, 'Transports et autres réservations du jour')), ...bks.map(bookingRow)) : null,
         h('div', { class: 'panel' }, list),
+        L.nearPanel(day),
         h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: hereNow, title: 'Ajoute l’endroit où tu te trouves, avec la date et l’heure' }, '📍 Je suis ici'),
           h('button', { class: 'btn', type: 'button', onclick: () => openPlaceForm({ day }) }, 'Ajouter un lieu'),
           h('button', { class: 'btn', type: 'button', onclick: () => openDayNote(day) }, 'Note ou photos du jour'),
@@ -1020,6 +1027,8 @@ async function toggleVisit(p){
   const v = p.status === 'visited';
   if (!v){ justStamped = p.id; clearTimeout(stampT); stampT = setTimeout(() => { justStamped = null; }, 900); try { navigator.vibrate && navigator.vibrate([18, 40, 28]); } catch {} }
   await save({ id: p.id, status: v ? 'planned' : 'visited', visitedAt: v ? null : new Date().toISOString(), visitedBy: v ? null : meName() }, v ? 'Tampon retiré' : 'Tamponné · ' + p.name);
+  // étape liée à un lieu de la bibliothèque : le tampon crée (ou retire, si elle est restée vide) la visite du jour
+  if (p.lieuId) await (v ? L.onStepUnstamped(p) : L.onStepStamped(p));
 }
 
 /* ---- Réordonner les lieux d'une journée (glisser-déposer) ---- */
@@ -1480,8 +1489,11 @@ function kindFromOsm(r){
 }
 function openPlaceForm(init){
   // l'état du formulaire est gardé ici : il survit aux rafraîchissements de la fiche
-  const st = { results: null, searching: false, picked: null,
-    v: { name: init.name || '', kind: init.kind || 'visite', day: init.day || '', time: '', city: '', address: '', link: '', note: '' },
+  // init.asLieu : même formulaire (recherche Google / OpenStreetMap, carte, lien) pour repérer un lieu de la bibliothèque
+  const asLieu = !!init.asLieu;
+  const st = { results: null, searching: false, picked: null, dups: null, dupOk: false,
+    v: { name: init.name || '', kind: init.kind || (asLieu ? 'vue' : 'visite'), day: init.day || '', time: '', city: '', address: '', link: '', note: '',
+      source: init.source || '', by: init.by || meName(), lived: init.lived || '', livedDate: init.livedDate || todayIso() },
     coords: num(init.lat) != null ? { lat: init.lat, lng: init.lng, coordSource: init.coordSource || 'carte' } : null };
   const bind = k => ({ id: 'pf-' + k, name: k, value: st.v[k], oninput: e => { st.v[k] = e.target.value; }, onchange: e => { st.v[k] = e.target.value; } });
   st.session = uid() + uid();
@@ -1553,6 +1565,14 @@ function openPlaceForm(init){
       if (!name){ toast('Donne un nom au lieu.'); return; }
       const c = parseCoords(v.link.trim());
       const coords = c ? { lat: c.lat, lng: c.lng, coordSource: /^https?:/.test(v.link.trim()) ? 'lien' : 'saisie' } : st.coords;
+      if (asLieu){
+        // doublon : un lieu de la bibliothèque à moins de 50 m est proposé avant d'en créer un nouveau
+        if (!st.dupOk){ st.dups = L.dupsAt(coords); if (st.dups.length){ document.activeElement && document.activeElement.blur(); S.sheet.render(); return; } }
+        document.activeElement && document.activeElement.blur();
+        const mapsUrl = /^https?:\/\//.test(v.link.trim()) ? v.link.trim() : (st.mapsUrl || null);
+        const l = await L.createFromForm({ ...v, name, lived: v.lived === '1', city: v.city.trim(), address: v.address.trim(), note: v.note.trim(), source: v.source.trim(), by: v.by.trim() }, coords, { gid: st.gid || null, mapsUrl });
+        close(); L.openLieu(l.id); return;
+      }
       const day = v.day || null;
       document.activeElement && document.activeElement.blur();
       await save({ id: uid(), type: 'place', name, kind: v.kind || 'visite', day, time: v.time || null,
@@ -1578,17 +1598,25 @@ function openPlaceForm(init){
           h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.coords = null; st.picked = null; S.sheet.render(); } }, 'Effacer'))
         : h('div', { class: 'muted small' }, 'Cherche le lieu pour remplir automatiquement sa position, sa ville et son type.'),
       h('div', { class: 'grid2' },
-        h('label', { class: 'f' }, 'Type', h('select', bind('kind'), Object.entries(KINDS).map(([k, l]) => h('option', { value: k, selected: k === st.v.kind ? true : null }, l)))),
-        h('label', { class: 'f' }, 'Quand', h('select', bind('day'), h('option', { value: '', selected: !st.v.day ? true : null }, 'Idée (sans date)'), tripDays().map(d => h('option', { value: d, selected: d === st.v.day ? true : null }, 'J' + (dayIdx(d) + 1) + ' · ' + fmtDay(d)))))),
+        h('label', { class: 'f' }, asLieu ? 'Catégorie' : 'Type', h('select', bind('kind'), Object.entries(KINDS).map(([k, l]) => h('option', { value: k, selected: k === st.v.kind ? true : null }, l)))),
+        asLieu ? h('label', { class: 'f' }, 'Statut', h('select', { ...bind('lived'), onchange: e => { st.v.lived = e.target.value; S.sheet.render(); } },
+            h('option', { value: '', selected: !st.v.lived ? true : null }, 'Repéré (à voir)'), h('option', { value: '1', selected: st.v.lived ? true : null }, 'Vécu (j’y suis allé)')))
+          : h('label', { class: 'f' }, 'Quand', h('select', bind('day'), h('option', { value: '', selected: !st.v.day ? true : null }, 'Idée (sans date)'), tripDays().map(d => h('option', { value: d, selected: d === st.v.day ? true : null }, 'J' + (dayIdx(d) + 1) + ' · ' + fmtDay(d)))))),
       h('div', { class: 'grid2' },
-        h('label', { class: 'f' }, 'Heure (facultatif)', h('input', { type: 'time', ...bind('time') })),
+        asLieu ? (st.v.lived ? h('label', { class: 'f' }, 'Date de la visite', h('input', { type: 'date', ...bind('livedDate') })) : h('label', { class: 'f' }, 'Ajouté par', h('input', { type: 'text', list: 'pf-names', ...bind('by') }), h('datalist', { id: 'pf-names' }, [...new Set([meName(), ...all('lieu').map(x => x.by)].filter(Boolean))].map(n => h('option', { value: n })))))
+          : h('label', { class: 'f' }, 'Heure (facultatif)', h('input', { type: 'time', ...bind('time') })),
         h('label', { class: 'f' }, 'Ville / quartier', h('input', { type: 'text', placeholder: 'Kyoto', ...bind('city') }))),
       st.v.address ? h('label', { class: 'f' }, 'Adresse', h('input', { type: 'text', ...bind('address') })) : null,
       h('label', { class: 'f' }, 'Lien Google Maps ou coordonnées (facultatif)', h('input', { type: 'text', placeholder: 'Lien « Partager » de Google Maps', ...bind('link') })),
-      h('label', { class: 'f' }, 'Note (facultatif)', h('input', { type: 'text', placeholder: 'Pourquoi y aller, horaires…', ...bind('note') })),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'Ajouter'),
-        h('button', { class: 'btn', type: 'button', onclick: () => { const v = st.v; startPlacing('Touche la carte pour placer le lieu', c => openPlaceForm({ ...init, name: v.name, kind: v.kind, day: v.day || null, lat: c.lat, lng: c.lng, coordSource: 'carte' })); } }, 'Placer sur la carte')));
-    return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead('Nouveau lieu', close), f);
+      asLieu ? h('label', { class: 'f' }, 'Source de l’idée (facultatif)', h('input', { type: 'text', placeholder: 'Lien Instagram, site, livre…', ...bind('source') })) : null,
+      h('label', { class: 'f' }, 'Note (facultatif)', h('input', { type: 'text', placeholder: asLieu ? 'Pourquoi s’y arrêter, meilleur moment…' : 'Pourquoi y aller, horaires…', ...bind('note') })),
+      asLieu && st.dups && st.dups.length ? h('div', { class: 'banner warn' }, h('div', null, 'Déjà dans ta bibliothèque à moins de 50 m :'),
+        st.dups.map(({ l, d }) => h('div', { class: 'row', style: 'margin-top:6px' }, h('b', null, l.name), h('span', { class: 'muted small' }, fmtDist(d)),
+          h('button', { class: 'btn small', type: 'button', onclick: async () => { if (st.v.lived) await L.createVisite(l.id, { date: st.v.livedDate || todayIso() }); close(); L.openLieu(l.id); } }, st.v.lived ? 'Ajouter une visite à ce lieu' : 'Ouvrir ce lieu'))),
+        h('div', { class: 'row', style: 'margin-top:6px' }, h('button', { class: 'btn small', type: 'button', onclick: () => { st.dupOk = true; f.requestSubmit(); } }, 'Créer quand même un nouveau lieu'))) : null,
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, asLieu ? 'Ajouter à la bibliothèque' : 'Ajouter'),
+        h('button', { class: 'btn', type: 'button', onclick: () => { const v = st.v; startPlacing('Touche la carte pour placer le lieu', c => openPlaceForm({ ...init, name: v.name, kind: v.kind, day: v.day || null, source: v.source, by: v.by, lived: v.lived, livedDate: v.livedDate, lat: c.lat, lng: c.lng, coordSource: 'carte' })); } }, 'Placer sur la carte')));
+    return h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, sheetHead(asLieu ? 'Repérer un lieu' : 'Nouveau lieu', close), f);
   });
 }
 
@@ -1688,6 +1716,7 @@ function openPlace(id){
       h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Notes et impressions'),
         notes.map(noteEl), noteForm({ placeId: id, day: p.day || null })),
       linked.length ? h('div', { class: 'sec' }, h('div', { class: 'eyebrow' }, 'Réservations liées'), linked.map(b => h('button', { class: 'doc', type: 'button', onclick: () => openBooking(b.id) }, h('span', null, b.title + (b.time ? ' · ' + b.time : ''))))) : null,
+      p.status !== 'suggested' ? L.placeSection(p, close) : null,
       h('details', { class: 'sec' }, h('summary', { class: 'eyebrow', style: 'cursor:pointer;padding-block:4px' }, 'Modifier'),
         (() => { const f = h('form', { class: 'form', style: 'padding:0', onsubmit: async e => {
           e.preventDefault(); const fd = new FormData(f); const link = String(fd.get('link') || '').trim(); const c = parseCoords(link);
@@ -1761,6 +1790,32 @@ function thumbs(list){
     return h('button', { class: 'th', type: 'button', onclick: () => openPhoto(m.id) }, img, m._localBlob ? h('span', { class: 'pend' }, 'en attente') : null);
   }));
 }
+// Prépare un fichier (photo réduite + vignette, ou billet) et le met en file d'envoi vers Drive. Renvoie l'élément `media`.
+// link : role (photo, billet, capture), placeId, bookingId, day, lieuId, visiteId. ex : EXIF déjà lu (facultatif).
+async function addMediaFile(file, link, ex0){
+  const isImg = file.type.startsWith('image/') && !/gif|svg/.test(file.type);
+  const ex = ex0 || (link.role === 'photo' && isImg ? await readExif(file) : {});
+  const blob = isImg ? await resize(file, 2560, 0.86) : file;
+  const thumb = isImg ? await thumbData(blob) : null;
+  const id = uid(); const mime = blob.type || file.type || 'application/octet-stream';
+  const ext = mime.includes('jpeg') ? 'jpg' : (file.name.split('.').pop() || 'bin');
+  const base = (file.name.replace(/\.[^.]+$/, '') || 'fichier').replace(/[^\w\-. ]+/g, '').slice(0, 60);
+  await idb.put('blobs', id, { blob, name: `${link.role}_${id}_${base}.${ext}`, mime, folder: link.role === 'billet' ? 'billets' : 'photos' });
+  const it = { id, type: 'media', role: link.role, placeId: link.placeId || null, bookingId: link.bookingId || null, day: link.day || null,
+    lieuId: link.lieuId || null, visiteId: link.visiteId || null,
+    name: file.name, mime, thumb, by: meName(), at: new Date().toISOString(),
+    takenAt: ex.takenLocal ? new Date(ex.takenLocal).toISOString() : file.lastModified ? new Date(file.lastModified).toISOString() : null,
+    takenLocal: ex.takenLocal || null, gps: ex.gps || null, fileId: null, _localBlob: true, _pending: true };
+  // photo du jour sans étape : rattachée automatiquement à l'étape toute proche si la photo porte sa position GPS
+  if (link.role === 'photo' && !it.placeId && !it.bookingId && !it.lieuId){
+    if (!it.day && ex.takenLocal && tripDays().includes(ex.takenLocal.slice(0, 10))) it.day = ex.takenLocal.slice(0, 10);
+    const g = guessTarget(it, it.day); if (g){ Object.assign(it, linkOfKey(g.key)); it.linkedBy = 'gps'; it._auto = true; }
+  }
+  S.items.set(id, it); await idb.put('items', id, it);
+  await idb.put('outbox', 'u:' + id, { kind: 'upload', id, ts: Date.now() });
+  await countPending(); schedule(); kick(300);
+  return it;
+}
 function uploadButton(label, accept, link, multiple){
   const inp = h('input', { type: 'file', accept, multiple: multiple ? true : null, hidden: true, onchange: async () => {
     const files = [...inp.files]; inp.value = ''; if (!files.length) return;
@@ -1768,25 +1823,9 @@ function uploadButton(label, accept, link, multiple){
     for (const file of files){
       btn.textContent = 'Préparation ' + (++n) + '/' + files.length + '…';
       try {
-        const isImg = file.type.startsWith('image/') && !/gif|svg/.test(file.type);
-        const ex = link.role === 'photo' && isImg ? await readExif(file) : {};
-        const blob = isImg ? await resize(file, 2560, 0.86) : file;
-        const thumb = isImg ? await thumbData(blob) : null;
-        const id = uid(); const mime = blob.type || file.type || 'application/octet-stream';
-        const ext = mime.includes('jpeg') ? 'jpg' : (file.name.split('.').pop() || 'bin');
-        const base = (file.name.replace(/\.[^.]+$/, '') || 'fichier').replace(/[^\w\-. ]+/g, '').slice(0, 60);
-        await idb.put('blobs', id, { blob, name: `${link.role}_${id}_${base}.${ext}`, mime, folder: link.role === 'billet' ? 'billets' : 'photos' });
-        const it = { id, type: 'media', role: link.role, placeId: link.placeId || null, bookingId: link.bookingId || null, day: link.day || null,
-          name: file.name, mime, thumb, by: meName(), at: new Date().toISOString(),
-          takenAt: ex.takenLocal ? new Date(ex.takenLocal).toISOString() : file.lastModified ? new Date(file.lastModified).toISOString() : null,
-          takenLocal: ex.takenLocal || null, gps: ex.gps || null, fileId: null, _localBlob: true, _pending: true };
-        // photo du jour sans étape : rattachée automatiquement à l'étape toute proche si la photo porte sa position GPS
-        if (link.role === 'photo' && !it.placeId && !it.bookingId){
-          if (!it.day && ex.takenLocal && tripDays().includes(ex.takenLocal.slice(0, 10))) it.day = ex.takenLocal.slice(0, 10);
-          const g = guessTarget(it, it.day); if (g){ Object.assign(it, linkOfKey(g.key)); it.linkedBy = 'gps'; auto++; }
-        }
-        S.items.set(id, it); await idb.put('items', id, it);
-        await idb.put('outbox', 'u:' + id, { kind: 'upload', id, ts: Date.now() });
+        const it = await addMediaFile(file, link);
+        if (it._auto){ auto++; delete it._auto; }
+        if (link.onDone) await link.onDone(it);
       } catch (e){ console.warn(e); toast('Impossible de préparer ' + file.name + '.'); }
     }
     await countPending(); btn.disabled = false; btn.textContent = label;
@@ -2303,6 +2342,18 @@ function dragToClose(sh, close){
   head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
 }
 const sheetHead = (title, close) => h('div', { class: 'sheet-head' }, h('h2', null, title), h('button', { class: 'btn ghost', type: 'button', onclick: close, 'aria-label': 'Fermer' }, 'Fermer'));
+
+/* ================= bibliothèque de lieux (lieux.js) ================= */
+// Noms des lieux connus autour d'un point (Google si la clé le permet, sinon OpenStreetMap).
+async function nearbyNames(at){
+  const radius = Math.max(40, Math.min(150, Math.round((at.acc || 30) * 1.5)));
+  if (gKey()){ try { bumpG('near'); const l = await googleNearby(gKey(), at, radius); if (l.length) return l; } catch (e){ console.warn('Tabi nearby', e); } }
+  return osmNearby(at, radius);
+}
+const L = installLieux({ h, S, all, live, save, toast, uid, meName, num, dist, fmtDist, fmtDay, fmtTime, isoDay, todayIso, tripDays, currentDay, daySeq, hasPos,
+  kindIcon, kindKey, KINDS, KIND_ICONS, kindChip, openSheet, sheetHead, mediaOf, thumbs, mediaUrl, uploadButton, addMediaFile, readExif, schedule, renderAll,
+  M, markerEl, mapPanel, mapTools, startPlacing, nextOrder, duringTrip, dayAnchors, placeUrl, openPlace, openPlaceForm, refreshDayLegs, LS, CONFIG,
+  nearbyNames, viewIdeas, placesOf, addrButton, openPhoto, parseCoords });
 
 /* ================= démarrage ================= */
 (async function boot(){
