@@ -57,7 +57,7 @@ Cahier des charges : [`docs/lieux-lot1.md`](docs/lieux-lot1.md). Code : `lieux.j
 - **Lieu** (`lieu_TB-XXXXXX.json`) : code permanent, nom local et lecture, direction du regard, saisons et moments, étiquettes, « vaut le détour », accès, source (lien, texte, capture d'écran), lieu privé. **Visites** (`visite_*.json`) numérotées, avec date, saison, avis ◎ ○ △, petite phrase et photos.
 - **Capturer** : photo et position (et boussole si disponible) en un geste ; crée le lieu, la visite et, pendant le voyage, l'étape tamponnée du jour. Doublon signalé à moins de 50 m ; fusion depuis la fiche.
 - **Journée** : « À voir près de ta journée » (lieux repérés à moins de 800 m d'une étape) ; tamponner une étape liée crée la visite.
-- **Carte postale** : JPEG 1800 × 1200 ou 1200 × 1800 (10 × 15 cm à 300 dpi), gabarits « Plein cadre » et « Carnet », mini-carte OpenStreetMap restylée, QR code `TB-XXXXXX/n`. Jamais pour un lieu privé.
+- **Carte postale** : JPEG à 300 dpi au format de tirage choisi (L ou 2L pour les konbini au Japon, 10 × 15 ou 13 × 18 cm en Europe), gabarits « Plein cadre » et « Carnet », mini-carte OpenStreetMap restylée, QR code `TB-XXXXXX/n`. Jamais pour un lieu privé.
 - **Scanner** : lecture du QR code (détecteur du navigateur, sinon jsQR embarqué) ou saisie du code.
 
 Bibliothèques embarquées : `vendor/qrcode.js` (Kazuhiko Arase, MIT), `vendor/jsQR.js` (Cosmo Wolfe, Apache 2.0, chargé seulement sans détecteur natif).

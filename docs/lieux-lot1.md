@@ -49,6 +49,7 @@ Statut : **repéré** tant qu'il n'a aucune visite, **vécu** dès la première 
 | `by` | auteur |
 | `photo` | id de la photo choisie pour la carte postale |
 | `printedAt` | date de la dernière carte postale générée (le numéro `n` ne change plus ensuite) |
+| `printedFormat` | format de cette dernière carte : `L`, `2L`, `10x15` ou `13x18` |
 
 Photos : éléments `media` existants, avec `lieuId` et `visiteId` en plus. Capture d'écran d'une source : `media` de `role: "capture"`.
 
@@ -64,7 +65,16 @@ Photos : éléments `media` existants, avec `lieuId` et `visiteId` en plus. Capt
 
 ## 4. Carte postale
 
-- Image JPEG 1800 × 1200 (paysage) ou 1200 × 1800 (portrait), soit 10 × 15 cm à 300 dpi, une seule face, papier mat.
+- Image JPEG à 300 dpi, une seule face, papier mat, aux proportions exactes du format choisi (ni bande blanche ni rognage au tirage) :
+
+  | format | usage | pixels (paysage) |
+  |---|---|---|
+  | L (89 × 127 mm) | Japon, konbini | 1500 × 1050 |
+  | 2L (127 × 178 mm) | Japon, konbini | 2100 × 1500 |
+  | 10 × 15 cm | Europe | 1800 × 1200 |
+  | 13 × 18 cm | Europe | 2126 × 1535 |
+
+  Le dernier format choisi est retenu sur le téléphone ; par défaut L si le téléphone est à l'heure de Tokyo, sinon 10 × 15.
 - Contenu : la photo, une mini-carte avec l'épingle (fond OpenStreetMap restylé façon washi), l'icône et le nom de la catégorie, le nom du lieu (et son nom local), la date, la phrase, le QR code `<code>/<n>` avec le code écrit en clair dessous.
 - Deux gabarits : « Plein cadre » (photo pleine page, bandeau washi en bas) et « Carnet » (photo à gauche, colonne washi à droite).
 - Sortie : enregistrer l'image ou la partager (impression au konbini depuis le téléphone, ou à la maison).
@@ -84,7 +94,7 @@ Le contrat `drive-readme.md` (v3) décrit `lieu` et `visite`. Claude peut créer
 
 - Les journées, étapes, réservations et photos existantes s'affichent et se synchronisent comme avant.
 - Un lieu capturé hors ligne garde sa photo et son code, et part à la synchronisation suivante.
-- La carte postale générée mesure 1800 × 1200 (ou 1200 × 1800) et son QR code se relit avec le lecteur de Tabi.
+- La carte postale générée a les dimensions exactes du format choisi (par exemple 1800 × 1200 en 10 × 15, 1500 × 1050 en L) et son QR code se relit avec le lecteur de Tabi.
 - Un lieu privé n'offre ni carte postale ni QR code.
 - La fusion conserve les visites, les photos et la résolution de l'ancien code.
 

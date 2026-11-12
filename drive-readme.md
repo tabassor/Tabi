@@ -1,4 +1,4 @@
-<!-- tabi-readme v3 -->
+<!-- tabi-readme v4 -->
 # Tabi 旅 — dossier de données
 
 Carnet de voyage partagé de la famille. L'appli (https://tabassor.github.io/Tabi/) lit et écrit ce dossier. Code et documentation : https://github.com/tabassor/Tabi
@@ -29,7 +29,7 @@ Champs communs : `id` (chaîne unique **tous types confondus** : un lieu et sa r
 | `media` | `role` (photo, billet, capture), `fileId` (fichier Drive), `placeId`, `bookingId`, `lieuId`, `visiteId`, `day`, `name`, `mime`, `thumb`, `caption`, `by`, `at`, `takenAt`, `takenLocal` (heure locale de prise de vue, EXIF), `gps` (`lat`, `lng` de la photo), `linkedBy` (gps, heure, main) |
 | `recap` | `section` (ouvert, decision, idee), `text`, `by`, `at`, `done` |
 | `lieu` (id = code `TB-XXXXXX`) | bibliothèque de lieux, hors des journées : `name`, `nameJa`, `nameKana` (lecture), `kind`, `lat`, `lng`, `coordSource`, `heading` (direction du regard, degrés), `city`, `country`, `address`, `addressJa`, `seasons` (printemps, ete, automne, hiver), `moments` (matin, journee, doree, soir, nuit), `tags`, `detour` (passage, detour, expres), `access`, `note`, `verdict` (super, bien, bof), `private`, `source` (`url`, `text`, `mediaId`, `at`), `refPhoto`, `by`, `createdAt`, `mergedInto` |
-| `visite` | passage à un lieu : `lieuId`, `n` (numéro, jamais réutilisé), `date`, `time`, `season`, `verdict`, `phrase`, `photo`, `by`, `stepId`, `printedAt`, `formerly` |
+| `visite` | passage à un lieu : `lieuId`, `n` (numéro, jamais réutilisé), `date`, `time`, `season`, `verdict`, `phrase`, `photo`, `by`, `stepId`, `printedAt`, `printedFormat` (L, 2L, 10x15, 13x18), `formerly` |
 | `leg` (géré par l'appli) | trajet entre deux étapes : ne jamais créer ni modifier |
 
 Suivi d'une réservation (tableaux, tous facultatifs) :

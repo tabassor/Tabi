@@ -520,7 +520,16 @@ export function installLieux(X){
   }
 
   /* ---------- carte postale ---------- */
-  const PC = { W: 1800, H: 1200 };
+  // Formats d'impression : pixels à 300 dpi (côté court, côté long). La mise en page est dessinée sur un côté long
+  // de 1800 unités, aux proportions du format, puis mise à l'échelle : rien n'est rogné ni bordé de blanc au tirage.
+  const PC_FORMATS = {
+    L: { label: 'L · 8,9 × 12,7 cm', zone: 'Japon (konbini)', mm: '89 × 127 mm', px: [1050, 1500] },
+    '2L': { label: '2L · 12,7 × 17,8 cm', zone: 'Japon (konbini)', mm: '127 × 178 mm', px: [1500, 2100] },
+    '10x15': { label: '10 × 15 cm', zone: 'Europe', mm: '10 × 15 cm', px: [1200, 1800] },
+    '13x18': { label: '13 × 18 cm', zone: 'Europe', mm: '13 × 18 cm', px: [1535, 2126] },
+  };
+  const defaultFormat = () => { const f = LS.get('tabi.pcFmt'); if (PC_FORMATS[f]) return f;
+    try { return /^Asia\/Tokyo$/.test(Intl.DateTimeFormat().resolvedOptions().timeZone) ? 'L' : '10x15'; } catch { return '10x15'; } };
   let washiStyleP = null;
   // Fond de carte OpenFreeMap restylé « washi » : couleurs papier, sans étiquettes ni relief.
   function washiStyle(){
@@ -602,9 +611,12 @@ export function installLieux(X){
     g.fillStyle = '#FBF5EA'; g.font = `700 ${Math.round(s * 0.62)}px "Shippori Mincho", serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('旅', 0, s * 0.03); g.restore();
   }
   async function renderCard(o){
-    const portrait = o.orient === 'portrait'; const W = portrait ? PC.H : PC.W, H = portrait ? PC.W : PC.H;
+    const portrait = o.orient === 'portrait'; const FM = PC_FORMATS[o.fmt] || PC_FORMATS['10x15'];
+    const s = FM.px[1] / 1800, shortD = Math.round(1800 * FM.px[0] / FM.px[1]);
+    const W = portrait ? shortD : 1800, H = portrait ? 1800 : shortD, dy = H - 1200;
     try { await Promise.all(['700 64px "Shippori Mincho"', '500 40px "Shippori Mincho"', '500 30px "JetBrains Mono"', '700 30px "Zen Kaku Gothic New"'].map(f => document.fonts.load(f))); } catch {}
-    const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
+    const c = document.createElement('canvas'); c.width = portrait ? FM.px[0] : FM.px[1]; c.height = portrait ? FM.px[1] : FM.px[0];
+    const g = c.getContext('2d'); g.setTransform(s, 0, 0, s, 0, 0);
     const paper = '#F5EFE4', ink = '#2A231B', soft = '#7A6E5E', red = '#B23A2A';
     g.fillStyle = paper; g.fillRect(0, 0, W, H);
     // grain léger du papier
@@ -616,8 +628,8 @@ export function installLieux(X){
       Y = { kind: 560, name: 634, meta: 694, phrase: 766, lh: 50, lines: 3 }; }
     else if (o.tpl === 'carnet'){ photoBox = [70, 70, W - 140, 1020]; tx = 70; tw = W - 140; mapC = { x: W - 70 - 165, y: 1300, r: 150 }; qrBox = { x: W - 70 - 180, y: H - 70 - 180 - 40, s: 180 };
       Y = { kind: 1190, name: 1264, meta: 1320, phrase: 1392, lh: 50, lines: 4 }; }
-    else if (!portrait){ photoBox = [0, 0, W, 840]; tx = 64; tw = W - 128; mapC = { x: W - 64 - 220 - 56 - 160, y: 840, r: 160 }; qrBox = { x: W - 64 - 220, y: H - 56 - 220 - 34, s: 220 };
-      Y = { kind: 922, name: 996, meta: 1050, phrase: 1110, lh: 46, lines: 2 }; }
+    else if (!portrait){ photoBox = [0, 0, W, 840 + dy]; tx = 64; tw = W - 128; mapC = { x: W - 64 - 220 - 56 - 160, y: 840 + dy, r: 160 }; qrBox = { x: W - 64 - 220, y: H - 56 - 220 - 34, s: 220 };
+      Y = { kind: 922 + dy, name: 996 + dy, meta: 1050 + dy, phrase: 1110 + dy, lh: 46, lines: 2 }; }
     else { photoBox = [0, 0, W, 1240]; tx = 64; tw = W - 128; mapC = { x: W - 64 - 150, y: 1240, r: 150 }; qrBox = { x: W - 64 - 200, y: H - 64 - 200 - 38, s: 200 };
       Y = { kind: 1324, name: 1402, meta: 1458, phrase: 1532, lh: 52, lines: 4 }; }
     // photo
@@ -626,7 +638,7 @@ export function installLieux(X){
     // mini-carte ronde avec l'épingle
     if (o.showMap && o.lat != null){
       const d = mapC.r * 2;
-      let m = null; try { m = await miniMap(o.lat, o.lng, d); } catch (e){ console.warn('Tabi mini-carte', e); }
+      let m = null; try { m = await miniMap(o.lat, o.lng, Math.round(d * s)); } catch (e){ console.warn('Tabi mini-carte', e); }
       g.save(); g.beginPath(); g.arc(mapC.x, mapC.y, mapC.r, 0, Math.PI * 2); g.closePath(); g.fillStyle = '#EFE6D5'; g.fill(); g.clip();
       if (m) g.drawImage(m, mapC.x - mapC.r, mapC.y - mapC.r, d, d);
       else { g.strokeStyle = '#D9CBB2'; g.lineWidth = 2; for (let k = -4; k <= 4; k++){ g.beginPath(); g.moveTo(mapC.x - mapC.r, mapC.y + k * mapC.r / 4); g.lineTo(mapC.x + mapC.r, mapC.y + k * mapC.r / 4); g.stroke(); g.beginPath(); g.moveTo(mapC.x + k * mapC.r / 4, mapC.y - mapC.r); g.lineTo(mapC.x + k * mapC.r / 4, mapC.y + mapC.r); g.stroke(); } }
@@ -638,9 +650,11 @@ export function installLieux(X){
     }
     // QR code + code en clair
     if (o.showQr){
-      const q = await qrCanvas(o.code, qrBox.s);
-      g.save(); g.fillStyle = '#fff'; g.fillRect(qrBox.x - 6, qrBox.y - 6, q.width + 12, q.height + 12); g.drawImage(q, qrBox.x, qrBox.y); g.restore();
-      g.save(); g.fillStyle = soft; g.font = '500 26px "JetBrains Mono", monospace'; g.textAlign = 'center'; g.fillText(o.code, qrBox.x + q.width / 2, qrBox.y + q.height + 34); g.restore();
+      // QR code dessiné au pixel près dans l'image finale (modules nets, sans lissage)
+      const q = await qrCanvas(o.code, Math.round(qrBox.s * s)); const qs = q.width / s;
+      g.save(); g.fillStyle = '#fff'; g.fillRect(qrBox.x - 6, qrBox.y - 6, qs + 12, qs + 12);
+      g.setTransform(1, 0, 0, 1, 0, 0); g.imageSmoothingEnabled = false; g.drawImage(q, Math.round(qrBox.x * s), Math.round(qrBox.y * s)); g.restore();
+      g.save(); g.fillStyle = soft; g.font = '500 26px "JetBrains Mono", monospace'; g.textAlign = 'center'; g.fillText(o.code, qrBox.x + qs / 2, qrBox.y + qs + 34); g.restore();
     }
     // textes : à gauche de la mini-carte (ou du QR code), sauf en colonne « carnet » paysage
     const hasMap = o.showMap && o.lat != null;
@@ -668,7 +682,7 @@ export function installLieux(X){
     return c;
   }
   function openPostcard(code, vid){
-    const st = { tpl: LS.get('tabi.pcTpl') || 'plein', orient: 'paysage', photo: null, showQr: true, showMap: true, showJa: true, busy: false, url: null, blob: null, err: null, phrase: null, gen: 0 };
+    const st = { tpl: LS.get('tabi.pcTpl') || 'plein', fmt: defaultFormat(), orient: 'paysage', photo: null, showQr: true, showMap: true, showJa: true, busy: false, url: null, blob: null, err: null, phrase: null, gen: 0 };
     const v0 = live(vid); if (!v0) return;
     st.phrase = v0.phrase || '';
     const pics = () => { const own = all('media').filter(m => m.visiteId === vid && m.role === 'photo'); return own.length ? own : photosOf(code); };
@@ -679,7 +693,7 @@ export function installLieux(X){
       if (l.private){ st.err = 'Lieu privé : pas de carte postale.'; S.sheet && S.sheet.render(); return; }
       const my = ++st.gen; st.busy = true; st.err = null; S.sheet && S.sheet.render();
       try {
-        const c = await renderCard({ tpl: st.tpl, orient: st.orient, photo: st.photo, showQr: st.showQr, showMap: st.showMap, showJa: st.showJa, code: l.id + '/' + v.n, kind: kindKey(l.kind), name: l.toIdentify ? (l.name || '') : l.name, nameJa: l.nameJa, nameKana: l.nameKana,
+        const c = await renderCard({ tpl: st.tpl, fmt: st.fmt, orient: st.orient, photo: st.photo, showQr: st.showQr, showMap: st.showMap, showJa: st.showJa, code: l.id + '/' + v.n, kind: kindKey(l.kind), name: l.toIdentify ? (l.name || '') : l.name, nameJa: l.nameJa, nameKana: l.nameKana,
           dateLabel: v.date ? fmtDay(v.date, { day: 'numeric', month: 'long', year: 'numeric' }) : '', city: [l.city, l.country].filter(Boolean).join(', '), phrase: st.phrase, lat: num(l.lat), lng: num(l.lng) });
         if (my !== st.gen) return;
         const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92));
@@ -688,8 +702,8 @@ export function installLieux(X){
       } catch (e){ console.warn(e); st.err = 'Génération impossible : ' + (e.message || e); }
       st.busy = false; S.sheet && S.sheet.render();
     }
-    const fname = () => { const l = live(code), v = live(vid); return 'carte_' + l.id + '-' + v.n + '.jpg'; };
-    const markPrinted = () => save({ id: vid, printedAt: new Date().toISOString(), phrase: st.phrase.trim() || null, photo: st.photo ? st.photo.id : null });
+    const fname = () => { const l = live(code), v = live(vid); return 'carte_' + l.id + '-' + v.n + '_' + st.fmt + '.jpg'; };
+    const markPrinted = () => save({ id: vid, printedAt: new Date().toISOString(), phrase: st.phrase.trim() || null, photo: st.photo ? st.photo.id : null, printedFormat: st.fmt });
     openSheet(close => {
       const l = live(code), v = live(vid); if (!l || !v) return null;
       const seg = (k, val, label) => h('button', { class: 'seg' + (st[k] === val ? ' on' : ''), type: 'button', onclick: () => { st[k] = val; if (k === 'tpl') LS.set('tabi.pcTpl', val); draw(); } }, label);
@@ -702,6 +716,8 @@ export function installLieux(X){
           st.err ? h('div', { class: 'banner warn' }, st.err) : null,
           h('div', { class: 'row' }, h('div', { class: 'seg-row' }, seg('tpl', 'plein', 'Plein cadre'), seg('tpl', 'carnet', 'Carnet')),
             h('div', { class: 'seg-row' }, seg('orient', 'paysage', 'Paysage'), seg('orient', 'portrait', 'Portrait'))),
+          h('label', { class: 'f' }, 'Format d’impression', h('select', { id: 'pc-fmt', onchange: e => { st.fmt = e.target.value; LS.set('tabi.pcFmt', st.fmt); e.target.blur(); draw(); } },
+            Object.entries(PC_FORMATS).map(([k, f]) => h('option', { value: k, selected: k === st.fmt ? true : null }, f.label + ' — ' + f.zone)))),
           ps.length > 1 ? h('div', { class: 'thumbs pick' }, ps.map(m => h('button', { class: 'th' + (st.photo && st.photo.id === m.id ? ' on' : ''), type: 'button', onclick: () => { st.photo = m; draw(); } }, h('img', { src: m.thumb || '', alt: '' })))) : null,
           !ps.length ? h('div', { class: 'muted small' }, 'Pas de photo pour cette visite : ajoute-en une depuis la fiche, ou garde la carte sans photo.') : null,
           h('label', { class: 'f' }, 'La petite phrase', h('div', { class: 'row', style: 'flex-wrap:nowrap' },
@@ -717,7 +733,8 @@ export function installLieux(X){
               const file = new File([st.blob], fname(), { type: 'image/jpeg' });
               if (!navigator.canShare({ files: [file] })){ toast('Partage de fichier non pris en charge ici : utilise « Enregistrer l’image ».'); return; }
               try { await navigator.share({ files: [file], title: l.name }); markPrinted(); } catch {} } }, 'Partager / imprimer') : null),
-          h('div', { class: 'muted small' }, (st.w || 1800) + ' × ' + (st.h || 1200) + ' px : 10 × 15 cm à 300 dpi. Au Japon, les imprimantes des konbini tirent les photos depuis le téléphone (format L ou 2L) ; papier mat conseillé pour coller et écrire.')),
+          h('div', { class: 'muted small' }, (st.w ? st.w + ' × ' + st.h + ' px : ' : '') + PC_FORMATS[st.fmt].mm + ' à 300 dpi, aux proportions exactes du tirage (ni bande blanche ni rognage). '
+            + (st.fmt === 'L' || st.fmt === '2L' ? 'Au konbini, choisis le même format (L ou 2L) sur la borne ou dans l’appli d’impression.' : 'Chez un photographe ou en ligne, choisis le même format.') + ' Papier mat conseillé pour coller et écrire.')),
         h('div', { style: 'height:8px' }));
     });
     draw();
