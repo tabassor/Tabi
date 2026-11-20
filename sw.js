@@ -1,5 +1,5 @@
 // Service worker Tabi : appli disponible hors ligne, fond de carte mis en cache au fil de l'usage.
-const SHELL = 'tabi-shell-v24';
+const SHELL = 'tabi-shell-v25';
 const TILES = 'tabi-tiles-v1';
 const MAPMETA = 'tabi-mapmeta-v1';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'lieux.js', 'routes.js', 'drive.js', 'store.js', 'icons.js', 'config.js', 'manifest.webmanifest', 'drive-readme.md',

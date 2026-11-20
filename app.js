@@ -344,7 +344,13 @@ const bookings = () => all('booking');
 const bookingsOf = day => bookings().filter(b => b.date === day).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
 const notesOf = (f, id) => all('note').filter(n => n[f] === id).sort((a, b) => (a.at || '').localeCompare(b.at || ''));
 const mediaOf = (f, id, role) => all('media').filter(m => m[f] === id && (!role || m.role === role)).sort((a, b) => (a.at || '').localeCompare(b.at || ''));
-const nextOrder = day => { const l = placesOf(day); return (l.length ? Math.max(...l.map(p => p.order ?? 0)) : 0) + 1; };
+// Ordre d'arrivée d'une étape dans une journée : avec une heure, elle se range avant la première étape plus tardive ;
+// sans heure (ou sans étape plus tardive), elle va en fin de journée. `skip` = id de l'étape elle-même (déplacement).
+const nextOrder = (day, time, skip) => {
+  const l = placesOf(day).filter(p => p.id !== skip);
+  if (time){ const i = l.findIndex(p => p.time && p.time > time); if (i >= 0) return (l[i].order ?? 0) - (i > 0 ? Math.min(0.5, ((l[i].order ?? 0) - (l[i - 1].order ?? 0)) / 2) : 0.5); }
+  return (l.length ? Math.max(...l.map(p => p.order ?? 0)) : 0) + 1;
+};
 const duringTrip = day => { const t = trip(); const td = todayIso(); return !!(day && t && td >= t.start && td <= t.end && day <= td); };
 
 /* ---- à suivre : tâches, échéances, sommes à régler sur place (champs todos, deadlines, toPay des réservations) ---- */
@@ -1578,7 +1584,7 @@ function openPlaceForm(init){
       await save({ id: uid(), type: 'place', name, kind: v.kind || 'visite', day, time: v.time || null,
         city: v.city.trim() || null, address: v.address.trim() || null,
         lat: coords ? coords.lat : null, lng: coords ? coords.lng : null, coordSource: coords ? coords.coordSource : null,
-        mapsUrl: /^https?:\/\//.test(v.link.trim()) ? v.link.trim() : (st.mapsUrl || null), googlePlaceId: st.gid || null, order: nextOrder(day), status: 'planned', addedDuring: duringTrip(day),
+        mapsUrl: /^https?:\/\//.test(v.link.trim()) ? v.link.trim() : (st.mapsUrl || null), googlePlaceId: st.gid || null, order: nextOrder(day, v.time || null), status: 'planned', addedDuring: duringTrip(day),
         note: v.note.trim() || null, createdBy: meName(), createdAt: new Date().toISOString() },
         day ? 'Ajouté au ' + fmtDay(day) + ' · ' + name : 'Ajouté aux idées · ' + name);
       close();
@@ -1724,7 +1730,7 @@ function openPlace(id){
             nameJa: String(fd.get('nameJa') || '').trim() || null, addressJa: String(fd.get('addressJa') || '').trim() || null, phone: String(fd.get('phone') || '').trim() || null };
           if (fd.has('tabelogUrl')){ upd.tabelogUrl = String(fd.get('tabelogUrl') || '').trim() || null; upd.tabelogScore = String(fd.get('tabelogScore') || '').trim().replace('.', ',') || null; }
           if (link !== (p.mapsUrl || '')){ upd.mapsUrl = /^https?:\/\//.test(link) ? link : null; if (c){ upd.lat = c.lat; upd.lng = c.lng; upd.coordSource = /^https?:/.test(link) ? 'lien' : 'saisie'; } }
-          const nd = fd.get('day') || null; if (nd !== (p.day || null)){ upd.day = nd; upd.order = nextOrder(nd); }
+          const nd = fd.get('day') || null; if (nd !== (p.day || null)){ upd.day = nd; upd.order = nextOrder(nd, upd.time, id); }
           document.activeElement && document.activeElement.blur();
           await save(upd, 'Enregistré');
           if (link && !c && /^https?:/.test(link)) toast('Lien enregistré. Lien court : position non lue, utilise « Placer sur la carte ».');
@@ -2120,7 +2126,7 @@ async function openTicket(m){
 async function placeFromBooking(b){
   const id = uid();
   await save({ id, type: 'place', name: b.title, kind: BK[b.kind] ? b.kind : 'visite', day: b.date || null, time: b.time || null, city: b.city || null, address: b.address || null,
-    lat: num(b.lat), lng: num(b.lng), coordSource: num(b.lat) != null ? 'estime' : null, order: nextOrder(b.date || null), status: 'planned', createdBy: meName(), createdAt: new Date().toISOString() });
+    lat: num(b.lat), lng: num(b.lng), coordSource: num(b.lat) != null ? 'estime' : null, order: nextOrder(b.date || null, b.time || null), status: 'planned', createdBy: meName(), createdAt: new Date().toISOString() });
   await save({ id: b.id, placeId: id }, 'Lieu créé');
 }
 function openBookingForm(b){
@@ -2162,7 +2168,7 @@ function viewIdeas(){
       h('div', { class: 'stamp', style: 'border-style:dotted' }, '＋'),
       h('div', { class: 'body', onclick: () => openPlace(p.id), role: 'button', tabindex: '0' }, h('div', { class: 'name' }, p.name),
         h('div', { class: 'meta' }, kindChip(p.kind), p.city ? h('span', { class: 'muted small' }, p.city) : null, p.note ? h('span', { class: 'muted small' }, p.note) : null)),
-      h('select', { 'aria-label': 'Planifier ' + p.name, id: 'plan-' + p.id, style: 'width:auto;max-width:130px', onchange: async e => { const d = e.target.value; if (!d) return; e.target.blur(); await save({ id: p.id, day: d, order: nextOrder(d), addedDuring: duringTrip(d) }, 'Planifié le ' + fmtDay(d)); } },
+      h('select', { 'aria-label': 'Planifier ' + p.name, id: 'plan-' + p.id, style: 'width:auto;max-width:130px', onchange: async e => { const d = e.target.value; if (!d) return; e.target.blur(); await save({ id: p.id, day: d, order: nextOrder(d, p.time, p.id), addedDuring: duringTrip(d) }, 'Planifié le ' + fmtDay(d)); } },
         h('option', { value: '' }, 'Planifier…'), tripDays().map(d => h('option', { value: d }, fmtDay(d))))))) :
       h('div', { class: 'empty' }, h('h3', null, 'Pas encore d’idées'), h('span', null, 'Note ici ce qui te tente sans date précise. Sur la carte du jour, « Voir les idées » les affiche pour repérer ce qui est proche.'))),
   ];
@@ -2235,7 +2241,7 @@ function viewClaude(){
       p.note ? h('div', { class: 'muted', style: 'font-size:13.5px' }, p.note) : null,
       p.city ? h('div', { class: 'muted small' }, p.city + (p.day ? ' · proposé pour le ' + fmtDay(p.day) : '')) : null,
       h('div', { class: 'row' },
-        day ? h('button', { class: 'btn primary', type: 'button', onclick: () => save({ id: p.id, status: 'planned', day: p.day || day, order: nextOrder(p.day || day), addedDuring: duringTrip(p.day || day) }, 'Ajouté au ' + fmtDay(p.day || day)) }, 'Ajouter au ' + fmtDay(p.day || day)) : null,
+        day ? h('button', { class: 'btn primary', type: 'button', onclick: () => save({ id: p.id, status: 'planned', day: p.day || day, order: nextOrder(p.day || day, p.time, p.id), addedDuring: duringTrip(p.day || day) }, 'Ajouté au ' + fmtDay(p.day || day)) }, 'Ajouter au ' + fmtDay(p.day || day)) : null,
         h('button', { class: 'btn', type: 'button', onclick: () => save({ id: p.id, status: 'planned', day: null }, 'Gardé en idée') }, 'Garder en idée'),
         h('button', { class: 'btn ghost', type: 'button', onclick: () => removeItem(p.id) }, 'Ignorer'))))) :
       h('div', { class: 'panel empty' }, h('span', null, 'Aucune suggestion en attente.')),
